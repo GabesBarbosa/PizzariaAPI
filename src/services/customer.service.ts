@@ -1,0 +1,19 @@
+import * as customerRepo from '../repositories/customer.repository';
+import { CreateCustomerDTO, UpdateCustomerDTO } from '../dtos/customer.dto';
+
+export const createCustomer = async (data: CreateCustomerDTO) => {
+  // Business rules could go here (e.g., phone format)
+  return customerRepo.createCustomer(data);
+};
+
+export const searchCustomers = async (term: string) => {
+  return customerRepo.findCustomersByNameOrPhone(term);
+};
+
+export const getCustomerById = async (id: string) => {
+  return customerRepo.findCustomerById(id);
+};
+
+export const updateCustomer = async (id: string, data: UpdateCustomerDTO) => {
+  return customerRepo.updateCustomer(id, data);
+};
