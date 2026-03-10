@@ -30,3 +30,22 @@ export const getCustomer = async (req: Request, res: Response, next: NextFunctio
     next(err);
   }
 };
+
+export const deleteCustomer = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    await customerService.deleteCustomer(req.params.id);
+    res.status(204).send();
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const updateCustomer = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const updated = await customerService.updateCustomer(req.params.id, req.body);
+    if (!updated) return res.status(404).json({ message: 'Cliente não encontrado' });
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+};

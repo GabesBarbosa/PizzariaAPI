@@ -1,0 +1,61 @@
+import { Request, Response, NextFunction } from 'express';
+import * as whatsappService from '../services/whatsapp.service';
+import { getAllCustomers } from '../repositories/customer.repository';
+
+export const getStatus = async (_req: Request, res: Response) => {
+  const status = await whatsappService.getStatus();
+  res.json(status);
+};
+
+export const sendMessage = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { phone, message } = req.body;
+    if (!phone || !message) {
+      return res.status(400).json({ error: 'phone e message são obrigatórios' });
+    }
+    const result = await whatsappService.sendTextMessage(phone, message);
+    res.json({ success: true, result });
+  } catch (err: any) {
+    if (err.message?.includes('não está conectado')) {
+      return res.status(503).json({ error: err.message });
+    }
+    next(err);
+  }
+};
+
+export const sendBulk = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { phones, message } = req.body;
+    if (!phones?.length || !message) {
+      return res.status(400).json({ error: 'phones (array) e message são obrigatórios' });
+    }
+    const result = await whatsappService.sendBulkMessages(phones, message);
+    res.json(result);
+  } catch (err: any) {
+    if (err.message?.includes('não está conectado')) {
+      return res.status(503).json({ error: err.message });
+    }
+    next(err);
+  }
+};
+
+export const sendToAllCustomers = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { message } = req.body;
+    if (!message) {
+      return res.status(400).json({ error: 'message é obrigatório' });
+    }
+    const customers = await getAllCustomers();
+    const phones = customers.map((c: any) => c.phone).filter(Boolean);
+    if (phones.length === 0) {
+      return res.status(400).json({ error: 'Nenhum cliente com telefone cadastrado' });
+    }
+    const result = await whatsappService.sendBulkMessages(phones, message);
+    res.json({ totalCustomers: phones.length, ...result });
+  } catch (err: any) {
+    if (err.message?.includes('não está conectado')) {
+      return res.status(503).json({ error: err.message });
+    }
+    next(err);
+  }
+};

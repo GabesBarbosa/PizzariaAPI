@@ -1,6 +1,12 @@
 import { getPool, sql } from '../database/mssqlClient';
 import { CreateCustomerDTO, UpdateCustomerDTO } from '../dtos/customer.dto';
 
+export const getAllCustomers = async () => {
+  const conn = await getPool();
+  const result = await conn.request().query('SELECT * FROM Customers ORDER BY name');
+  return result.recordset;
+};
+
 export const createCustomer = async (data: CreateCustomerDTO) => {
   const conn = await getPool();
   const request = conn.request();
@@ -34,7 +40,7 @@ export const findCustomersByNameOrPhone = async (term: string) => {
 };
 
 export const updateCustomer = async (id: string, data: UpdateCustomerDTO) => {
-  const conn = await pool.connect();
+  const conn = await getPool();
   const request = conn.request();
   request.input('id', sql.UniqueIdentifier, id);
   request.input('name', sql.NVarChar(200), data.name || null);
@@ -48,4 +54,11 @@ export const updateCustomer = async (id: string, data: UpdateCustomerDTO) => {
      OUTPUT inserted.*
      WHERE id = @id`);
   return result.recordset[0];
+};
+
+export const deleteCustomer = async (id: string) => {
+  const conn = await getPool();
+  const request = conn.request();
+  request.input('id', sql.UniqueIdentifier, id);
+  await request.query('DELETE FROM Customers WHERE id = @id');
 };

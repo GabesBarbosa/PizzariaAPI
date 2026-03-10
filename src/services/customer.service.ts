@@ -17,3 +17,7 @@ export const getCustomerById = async (id: string) => {
 export const updateCustomer = async (id: string, data: UpdateCustomerDTO) => {
   return customerRepo.updateCustomer(id, data);
 };
+
+export const deleteCustomer = async (id: string) => {
+  return customerRepo.deleteCustomer(id);
+};
