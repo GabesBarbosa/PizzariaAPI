@@ -18,9 +18,8 @@ jobs:
 
       - name: Install dependencies (API)
         run: npm ci
-        working-directory: ./api
+        working-directory: ./api   # só se /api existir e conter package.json
 
-      # Se usa TypeScript, habilite build (ajuste script no package.json da pasta api)
       - name: Build API (if needed)
         run: npm run build
         working-directory: ./api
@@ -32,6 +31,6 @@ jobs:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           action: "upload"
-          app_location: "/"         # repo root (ajuste se tiver frontend aqui)
-          api_location: "api"       # pasta onde estão suas Azure Functions
-          output_location: ""       # não aplicável para API-only deploys
+          app_location: ""        # vazio se este repo só contém a API
+          api_location: "api"     # caminho para suas Azure Functions
+          output_location: ""
