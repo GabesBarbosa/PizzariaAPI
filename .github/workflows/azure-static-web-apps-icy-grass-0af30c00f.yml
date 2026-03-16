@@ -24,6 +24,9 @@ jobs:
       - name: Build (TS -> dist)
         run: npm run build
 
+      - name: Fix git config permissions
+        run: sudo chmod -R u+w .git
+
       - name: Prepare api/dist (copy build output for Azure Functions)
         run: |
           # create api folder if missing (we commit api/expressFunction files separately)
