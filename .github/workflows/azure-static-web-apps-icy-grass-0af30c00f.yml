@@ -1,3 +1,4 @@
+# acrescentar o passo `Prisma generate` antes do `Build`
 name: Deploy Node (Express) to Azure Web App
 
 on:
@@ -26,9 +27,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Prisma generate
+        run: npx prisma generate
+
       - name: Build (if you have a build step)
         run: npm run build
-        continue-on-error: true
+        continue-on-error: false
 
       - name: Archive files for deploy
         run: zip -r app.zip .
