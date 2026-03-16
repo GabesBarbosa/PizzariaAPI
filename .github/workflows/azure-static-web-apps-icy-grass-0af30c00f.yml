@@ -9,11 +9,20 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     env:
+      # opcional: mapeamento para uso dentro do job se precisar
       AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
       AZURE_WEBAPP_PUBLISH_PROFILE: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Debug - check secrets presence
+        run: |
+          echo "AZURE_WEBAPP_PUBLISH_PROFILE present: ${AZURE_WEBAPP_PUBLISH_PROFILE:+yes}"
+          echo "AZURE_CREDENTIALS present: ${AZURE_CREDENTIALS:+yes}"
+        env:
+          AZURE_WEBAPP_PUBLISH_PROFILE: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Debug - list repository
         run: |
@@ -42,25 +51,36 @@ jobs:
         run: npm run build
         continue-on-error: false
 
+      - name: Debug - show built folders
+        run: |
+          echo "dist:"
+          ls -la dist || true
+          echo "api:"
+          ls -la api || true
+          echo "api/dist:"
+          ls -la api/dist || true
+
       - name: Archive files for deploy
         run: zip -r app.zip .
 
-      - name: Login to Azure (service principal)
-        if: ${{ env.AZURE_CREDENTIALS != '' }}
-        uses: azure/login@v1
-        with:
-          creds: ${{ env.AZURE_CREDENTIALS }}
-
+      # Try publish profile deploy first (if secret provided)
       - name: Deploy to Azure Web App (publish profile)
-        if: ${{ env.AZURE_WEBAPP_PUBLISH_PROFILE != '' }}
+        if: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE != '' }}
         uses: azure/webapps-deploy@v2
         with:
           app-name: 'ComandaAPI'
-          publish-profile: ${{ env.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
           package: './app.zip'
 
+      # Fallback: login using service principal then deploy
+      - name: Login to Azure (service principal)
+        if: ${{ secrets.AZURE_CREDENTIALS != '' && secrets.AZURE_WEBAPP_PUBLISH_PROFILE == '' }}
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
       - name: Deploy to Azure Web App (service principal fallback)
-        if: ${{ env.AZURE_WEBAPP_PUBLISH_PROFILE == '' && env.AZURE_CREDENTIALS != '' }}
+        if: ${{ secrets.AZURE_CREDENTIALS != '' && secrets.AZURE_WEBAPP_PUBLISH_PROFILE == '' }}
         uses: azure/webapps-deploy@v2
         with:
           app-name: 'ComandaAPI'
