@@ -1,4 +1,4 @@
-name: Deploy Node (Express) to Azure Web App
+name: Azure Static Web Apps CI/CD (with Express wrapped as Function)
 
 on:
   push:
@@ -6,29 +6,14 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-and-deploy:
+  build_and_deploy:
     runs-on: ubuntu-latest
-    env:
-      # mapear secrets para env para uso nas condições if
-      AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
-      AZURE_WEBAPP_PUBLISH_PROFILE: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Debug - check secrets presence
-        run: |
-          echo "AZURE_WEBAPP_PUBLISH_PROFILE present: ${AZURE_WEBAPP_PUBLISH_PROFILE:+yes}"
-          echo "AZURE_CREDENTIALS present: ${AZURE_CREDENTIALS:+yes}"
-
-      - name: Debug - list repository
-        run: |
-          pwd
-          ls -la
-          echo "ls ./api:"
-          ls -la ./api || true
-
-      - name: Setup Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -36,49 +21,32 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Prisma generate (only if prisma schema exists)
-        run: |
-          if [ -f prisma/schema.prisma ]; then
-            npx prisma generate
-          else
-            echo "No prisma/schema.prisma found — skipping prisma generate"
-          fi
-
-      - name: Build
+      - name: Build (TS -> dist)
         run: npm run build
-        continue-on-error: false
 
-      - name: Debug - show built folders
+      - name: Prepare api/dist (copy build output for Azure Functions)
         run: |
-          echo "dist:"
-          ls -la dist || true
-          echo "api:"
+          # create api folder if missing (we commit api/expressFunction files separately)
+          mkdir -p api/dist
+          cp -R dist/* api/dist/ || true
+          echo "api folder listing:"
           ls -la api || true
-          echo "api/dist:"
+          echo "api/dist listing:"
           ls -la api/dist || true
 
-      - name: Archive files for deploy
-        run: zip -r app.zip .
+      - name: Debug - repo files
+        run: |
+          echo "root listing:"
+          ls -la
+          echo ".github listing:"
+          ls -la .github || true
 
-      # Try publish profile deploy first (if env var non-empty)
-      - name: Deploy to Azure Web App (publish profile)
-        if: ${{ env.AZURE_WEBAPP_PUBLISH_PROFILE != '' }}
-        uses: azure/webapps-deploy@v2
+      - name: Deploy to Azure Static Web Apps
+        uses: Azure/static-web-apps-deploy@v1
         with:
-          app-name: 'ComandaAPI'
-          publish-profile: ${{ env.AZURE_WEBAPP_PUBLISH_PROFILE }}
-          package: './app.zip'
-
-      # Fallback: login using service principal then deploy
-      - name: Login to Azure (service principal)
-        if: ${{ env.AZURE_CREDENTIALS != '' && env.AZURE_WEBAPP_PUBLISH_PROFILE == '' }}
-        uses: azure/login@v1
-        with:
-          creds: ${{ env.AZURE_CREDENTIALS }}
-
-      - name: Deploy to Azure Web App (service principal fallback)
-        if: ${{ env.AZURE_CREDENTIALS != '' && env.AZURE_WEBAPP_PUBLISH_PROFILE == '' }}
-        uses: azure/webapps-deploy@v2
-        with:
-          app-name: 'ComandaAPI'
-          package: './app.zip'
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: "upload"
+          app_location: "/"         # frontend root (ajuste se necessário)
+          api_location: "api"       # pasta contendo as Functions
+          output_location: "dist"   # pasta de saída do build do frontend
