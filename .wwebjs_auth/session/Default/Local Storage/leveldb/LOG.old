@@ -1,3 +1,6 @@
-2026/03/10-11:48:27.673 9b64 Reusing MANIFEST C:\Workspace\Pizzaria\PizzariaAPI\.wwebjs_auth\session\Default\Local Storage\leveldb/MANIFEST-000001
-2026/03/10-11:48:27.677 9b64 Recovering log #12
-2026/03/10-11:48:27.681 9b64 Reusing old log C:\Workspace\Pizzaria\PizzariaAPI\.wwebjs_auth\session\Default\Local Storage\leveldb/000012.log 
+2026/03/10-13:03:27.537 cff8 Reusing MANIFEST C:\Workspace\Pizzaria\PizzariaAPI\.wwebjs_auth\session\Default\Local Storage\leveldb/MANIFEST-000001
+2026/03/10-13:03:27.550 cff8 Recovering log #12
+2026/03/10-13:03:27.555 cff8 Reusing old log C:\Workspace\Pizzaria\PizzariaAPI\.wwebjs_auth\session\Default\Local Storage\leveldb/000012.log 
+2026/03/10-13:04:27.577 901c Level-0 table #17: started
+2026/03/10-13:04:27.590 901c Level-0 table #17: 15667 bytes OK
+2026/03/10-13:04:27.592 901c Delete type=0 #12

@@ -1,3 +1,20 @@
-2026/03/10-13:03:29.497 6c9c Reusing MANIFEST C:\Workspace\Pizzaria\PizzariaAPI\.wwebjs_auth\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
-2026/03/10-13:03:29.498 6c9c Recovering log #131
-2026/03/10-13:03:29.601 6c9c Reusing old log C:\Workspace\Pizzaria\PizzariaAPI\.wwebjs_auth\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/000131.log 
+2026/03/11-21:30:18.773 84e4 Reusing MANIFEST C:\Workspace\Pizzaria\PizzariaAPI\.wwebjs_auth\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/03/11-21:30:18.796 84e4 Recovering log #131
+2026/03/11-21:30:18.875 84e4 Reusing old log C:\Workspace\Pizzaria\PizzariaAPI\.wwebjs_auth\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/000131.log 
+2026/03/11-21:30:34.728 890c Level-0 table #136: started
+2026/03/11-21:30:34.805 890c Level-0 table #136: 1306189 bytes OK
+2026/03/11-21:30:34.884 890c Delete type=0 #131
+2026/03/11-21:30:35.019 8a40 Compacting 1@1 + 1@2 files
+2026/03/11-21:30:38.803 8a40 Generated table #137@1: 65049 keys, 2162286 bytes
+2026/03/11-21:30:38.806 8a40 Compacted 1@1 + 1@2 files => 2162286 bytes
+2026/03/11-21:30:38.822 8a40 compacted to: files[ 0 0 1 0 0 0 0 ]
+2026/03/11-21:31:14.523 890c Level-0 table #139: started
+2026/03/11-21:31:14.612 890c Level-0 table #139: 1096180 bytes OK
+2026/03/11-21:31:14.646 890c Delete type=2 #133
+2026/03/11-21:31:14.647 890c Delete type=0 #135
+2026/03/11-21:31:14.647 890c Delete type=2 #136
+2026/03/11-21:31:14.693 890c Compacting 1@1 + 1@2 files
+2026/03/11-21:31:15.275 890c Generated table #140@1: 72459 keys, 2250979 bytes
+2026/03/11-21:31:15.427 890c Generated table #141@1: 18146 keys, 455168 bytes
+2026/03/11-21:31:15.427 890c Compacted 1@1 + 1@2 files => 2706147 bytes
+2026/03/11-21:31:15.428 890c compacted to: files[ 0 0 2 0 0 0 0 ]
