@@ -1,0 +1,203 @@
+*** Begin Patch
+*** Add File: src/app.ts
++import express from 'express';
++import bodyParser from 'body-parser';
++import authRoutes from './routes/auth.routes';
++// importe e registre outros routers conforme seu código
++
++const app = express();
++
++app.use(bodyParser.json());
++app.use(bodyParser.urlencoded({ extended: true }));
++
++// Exemplo: ajuste conforme seus arquivos de rota
++app.use('/auth', authRoutes);
++
++// Outras rotas/middlewares...
++// app.use('/customers', customerRoutes);
++// app.use('/orders', orderRoutes);
++
++export default app;
++
+*** End Patch
+*** Begin Patch
+*** Add File: src/server.ts
++import app from './app';
++
++const port = process.env.PORT || 3000;
++
++app.listen(port, () => {
++  console.log(`Server listening on port ${port}`);
++});
++
+*** End Patch
+*** Begin Patch
+*** Add File: api/expressFunction/index.js
++const serverless = require('serverless-http');
++
++let app;
++try {
++  // O build irá copiar o arquivo compilado (dist/app.js) para api/dist/app.js
++  app = require('./dist/app').default || require('./dist/app');
++} catch (err) {
++  console.error('Erro ao carregar app em ./dist/app:', err);
++  throw err;
++}
++
++module.exports = serverless(app);
++
+*** End Patch
+*** Begin Patch
+*** Add File: api/expressFunction/function.json
++{
++  "bindings": [
++    {
++      "authLevel": "anonymous",
++      "type": "httpTrigger",
++      "direction": "in",
++      "name": "req",
++      "route": "{*segments}",
++      "methods": [
++        "get",
++        "post",
++        "put",
++        "delete",
++        "patch",
++        "options"
++      ]
++    },
++    {
++      "type": "http",
++      "direction": "out",
++      "name": "res"
++    }
++  ]
++}
++
+*** End Patch
+*** Begin Patch
+*** Add File: api/package.json
++{
++  "name": "api",
++  "version": "1.0.0",
++  "dependencies": {
++    "serverless-http": "^2.8.0"
++  }
++}
++
+*** End Patch
+*** Begin Patch
+*** Add File: .github/workflows/azure-static-web-apps.yml
++name: Azure Static Web Apps CI/CD
++
++on:
++  push:
++    branches: [ main ]
++  pull_request:
++    types:
++      - opened
++      - synchronize
++      - reopened
++
++jobs:
++  build_and_deploy_job:
++    runs-on: ubuntu-latest
++
++    steps:
++      - name: Checkout repository
++        uses: actions/checkout@v4
++
++      - name: Setup Node
++        uses: actions/setup-node@v4
++        with:
++          node-version: 20
++
++      - name: Install dependencies
++        run: npm install --no-audit --no-fund
++
++      - name: Build project (TS -> dist) and prepare API folder
++        run: |
++          npm run build
++          # garante que api/dist é populado
++          rm -rf api/dist || true
++          mkdir -p api/dist
++          cp -R dist/* api/dist/ || true
++          echo "api files:"
++          ls -la api | sed -n '1,200p'
++          echo "api/expressFunction files:"
++          ls -la api/expressFunction | sed -n '1,200p'
++          echo "api/dist sample:"
++          ls -la api/dist | sed -n '1,200p'
++
++      - name: Deploy to Azure Static Web Apps
++        uses: Azure/static-web-apps-deploy@v1
++        with:
++          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
++          repo_token: ${{ secrets.GITHUB_TOKEN }}
++          action: "upload"
++          app_location: "/"         # raiz do app frontend
++          api_location: "api"       # pasta com as functions
++          output_location: "dist"   # pasta de saída do build do frontend
++
+*** End Patch
+*** Begin Patch
+*** Add File: .gitignore
++# ignore build artifacts in api
++api/dist
++# node and build artifacts
++node_modules
++dist
++.env
++
+*** End Patch
+*** Begin Patch
+*** Delete File: package.json
+*** End Patch
+*** Begin Patch
+*** Add File: package.json
++{
++  "name": "pizzaria-api",
++  "version": "0.1.0",
++  "scripts": {
++    "build": "tsc",
++    "postbuild": "rm -rf api/dist && mkdir -p api/dist && cp -R dist/* api/dist/ || true",
++    "start": "node dist/server.js",
++    "dev": "ts-node-dev src/server.ts"
++  },
++  "dependencies": {
++    "express": "^4.18.2",
++    "mssql": "^8.0.1",
++    "qrcode-terminal": "^0.12.0"
++  },
++  "devDependencies": {
++    "typescript": "^5.0.0",
++    "@types/node": "^18.0.0",
++    "@types/express": "^4.17.21",
++    "@types/mssql": "^6.0.0",
++    "ts-node-dev": "^2.0.0"
++  }
++}
++
+*** End Patch
+*** Begin Patch
+*** Delete File: tsconfig.json
+*** End Patch
+*** Begin Patch
+*** Add File: tsconfig.json
++{
++  "compilerOptions": {
++    "target": "ES2020",
++    "module": "commonjs",
++    "outDir": "dist",
++    "rootDir": "src",
++    "strict": true,
++    "skipLibCheck": true,
++    "esModuleInterop": true,
++    "resolveJsonModule": true,
++    "moduleResolution": "node"
++  },
++  "include": ["src", "src/types"]
++}
++
+*** End Patch
+*** End Patch
