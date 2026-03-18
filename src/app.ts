@@ -16,6 +16,7 @@ app.use(express.json());
 
 const allowedOrigins = [
   'http://localhost:4200',
+  'https://nice-plant-0a66aee0f.2.azurestaticapps.net',
   process.env.SPA_ORIGIN
 ].filter(Boolean) as string[];
 
