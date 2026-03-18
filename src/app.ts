@@ -14,8 +14,12 @@ import { authMiddleware } from './middlewares/auth.middleware';
 const app = express();
 app.use(express.json());
 
-// Allow requests from local SPA during development
-app.use(cors({ origin: 'http://localhost:4200' }));
+const allowedOrigins = [
+  'http://localhost:4200',
+  process.env.SPA_ORIGIN
+].filter(Boolean) as string[];
+
+app.use(cors({ origin: allowedOrigins }));
 
 // Public routes (no auth required)
 app.use('/api/auth', authRoutes);
