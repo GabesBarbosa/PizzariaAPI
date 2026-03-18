@@ -22,6 +22,9 @@
 # TypeScript cache
 *.tsbuildinfo
 
+# WhatsApp Web JS auth session (gerado em runtime, não deve ir ao git)
+.wwebjs_auth/
+
 # Logs
 npm-debug.log*
 yarn-debug.log*
