@@ -13,10 +13,13 @@ const baseConfig = {
   port: process.env.DB_PORT ? parseInt(process.env.DB_PORT, 10) : 1433,
   user: process.env.DB_USER || 'sa',
   password: process.env.DB_PASSWORD || '',
+  requestTimeout: 60000,
+  connectionTimeout: 60000,
   options: {
     encrypt: true,
     trustServerCertificate: false,
-    instanceName: process.env.DB_INSTANCE || undefined
+    instanceName: process.env.DB_INSTANCE || undefined,
+    connectTimeout: 60000
   }
 };
 

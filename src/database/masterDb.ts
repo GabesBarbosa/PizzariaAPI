@@ -11,10 +11,13 @@ const masterConfig: sql.config = {
   user: process.env.DB_USER || 'sa',
   password: process.env.DB_PASSWORD || '',
   database: 'PizzariaMaster',
+  requestTimeout: 60000,
+  connectionTimeout: 60000,
   options: {
     encrypt: true,
     trustServerCertificate: false,
-    instanceName: process.env.DB_INSTANCE || undefined
+    instanceName: process.env.DB_INSTANCE || undefined,
+    connectTimeout: 60000
   }
 };
 
