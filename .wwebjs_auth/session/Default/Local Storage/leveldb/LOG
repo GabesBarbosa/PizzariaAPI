@@ -1,6 +1,0 @@
-2026/03/10-20:07:58.804 d1cc Reusing MANIFEST C:\Users\gumar\VscodeProjects\PizzariaAPI\.wwebjs_auth\session\Default\Local Storage\leveldb/MANIFEST-000001
-2026/03/10-20:07:58.817 d1cc Recovering log #4
-2026/03/10-20:07:58.822 d1cc Reusing old log C:\Users\gumar\VscodeProjects\PizzariaAPI\.wwebjs_auth\session\Default\Local Storage\leveldb/000004.log 
-2026/03/11-03:02:20.667 c040 Level-0 table #8: started
-2026/03/11-03:02:20.683 c040 Level-0 table #8: 14087 bytes OK
-2026/03/11-03:02:20.688 c040 Delete type=0 #4

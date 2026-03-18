@@ -1,0 +1,54 @@
+steps:
+  - name: Checkout
+    uses: actions/checkout@v4
+    with:
+      fetch-depth: 0
+      submodules: recursive
+      persist-credentials: true
+
+  - name: Ensure .git is writable
+    run: |
+      if [ -d .git ]; then
+        # ensure runner owns repository .git files (useful if any files were created as root)
+        sudo chown -R $(id -un):$(id -gn) .git || true
+        # ensure the runner user can write and traverse .git
+        sudo chmod -R u+rwX .git || true
+      fi
+
+  - name: Setup Node
+    uses: actions/setup-node@v4
+    with:
+      node-version: '20'
+
+  - name: Install dependencies
+    run: npm install --no-audit --no-fund
+
+  - name: Build (TS -> dist)
+    run: npm run build
+
+  - name: Prepare api/dist (copy build output for Azure Functions)
+    run: |
+      # create api folder if missing (we commit api/expressFunction files separately)
+      mkdir -p api/dist
+      cp -R dist/* api/dist/ || true
+      echo "api folder listing:"
+      ls -la api || true
+      echo "api/dist listing:"
+      ls -la api/dist || true
+
+  - name: Debug - repo files
+    run: |
+      echo "root listing:"
+      ls -la
+      echo ".github listing:"
+      ls -la .github || true
+
+  - name: Deploy to Azure Static Web Apps
+    uses: Azure/static-web-apps-deploy@v1
+    with:
+      azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+      repo_token: ${{ secrets.GITHUB_TOKEN }}
+      action: "upload"
+      app_location: "/"         # frontend root (ajuste se necessário)
+      api_location: "api"       # pasta contendo as Functions
+      output_location: "dist"   # pasta de saída do build do frontend

@@ -1,4 +1,3 @@
-import { OrderStatus } from '@prisma/client';
 
 export interface OrderItem {
   productId: string;
@@ -11,6 +10,6 @@ export interface Order {
   customerId: string;
   items: OrderItem[];
   total: number;
-  status: OrderStatus;
+  status: string;
   createdAt?: Date;
 }
