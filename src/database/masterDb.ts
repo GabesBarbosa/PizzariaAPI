@@ -18,12 +18,14 @@ const masterConfig: sql.config = {
   }
 };
 
-const masterPool = new sql.ConnectionPool(masterConfig);
+let masterPool: sql.ConnectionPool | null = null;
 let masterConnectPromise: Promise<sql.ConnectionPool> | null = null;
 
 export const getMasterPool = async (): Promise<sql.ConnectionPool> => {
   if (!masterConnectPromise) {
-    masterConnectPromise = masterPool.connect().then(() => masterPool).catch((err) => {
+    masterPool = new sql.ConnectionPool(masterConfig);
+    masterConnectPromise = masterPool.connect().then(() => masterPool!).catch((err) => {
+      masterPool = null;
       masterConnectPromise = null;
       const e: any = new Error('Failed to connect to PizzariaMaster database');
       e.original = err;
