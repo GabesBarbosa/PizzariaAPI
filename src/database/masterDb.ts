@@ -12,8 +12,8 @@ const masterConfig: sql.config = {
   password: process.env.DB_PASSWORD || '',
   database: 'PizzariaMaster',
   options: {
-    encrypt: false,
-    trustServerCertificate: true,
+    encrypt: true,
+    trustServerCertificate: false,
     instanceName: process.env.DB_INSTANCE || undefined
   }
 };

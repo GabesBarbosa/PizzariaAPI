@@ -3,6 +3,7 @@ import qrTerminal from 'qrcode-terminal';
 import QRCode from 'qrcode';
 import logger from '../utils/logger';
 import { handleMessage } from './chatbot.service';
+import { tenantStorage } from '../database/tenantContext';
 
 let client: Client;
 let qrCodeData: string | null = null;
@@ -11,10 +12,6 @@ let isReady = false;
 export function initWhatsApp(): void {
   client = new Client({
     authStrategy: new LocalAuth({ dataPath: '.wwebjs_auth' }),
-    webVersionCache: {
-      type: 'remote',
-      remotePath: 'https://raw.githubusercontent.com/niconeitor/niconeitor/refs/heads/master/niconeitor.json'
-    },
     puppeteer: {
       headless: true,
       args: [
@@ -55,12 +52,20 @@ export function initWhatsApp(): void {
     logger.warn('WhatsApp desconectado:', reason);
   });
 
+  const whatsappTenantContext = {
+    tenantId: process.env.WHATSAPP_TENANT_ID || 'default',
+    dbName: process.env.DB_NAME || 'Pizzaria',
+    userId: 'whatsapp-bot',
+  };
+
   client.on('message', async (message: Message) => {
     try {
       if (message.fromMe || message.from.endsWith('@g.us') || message.from === 'status@broadcast') return;
       if (!message.body) return;
 
-      const reply = await handleMessage(message.from, message.body);
+      const reply = await tenantStorage.run(whatsappTenantContext, () =>
+        handleMessage(message.from, message.body)
+      );
       if (reply) await client.sendMessage(message.from, reply);
     } catch (err: any) {
       logger.error(`[WhatsApp Bot] Erro ao processar mensagem de ${message.from}: ${err.message}`);

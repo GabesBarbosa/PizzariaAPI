@@ -14,8 +14,8 @@ const baseConfig = {
   user: process.env.DB_USER || 'sa',
   password: process.env.DB_PASSWORD || '',
   options: {
-    encrypt: false,
-    trustServerCertificate: true,
+    encrypt: true,
+    trustServerCertificate: false,
     instanceName: process.env.DB_INSTANCE || undefined
   }
 };
