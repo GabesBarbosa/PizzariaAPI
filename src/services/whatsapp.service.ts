@@ -7,13 +7,10 @@ import { tenantStorage } from '../database/tenantContext';
 
 let client: Client;
 let qrCodeData: string | null = null;
-let qrGeneratedAt: number = 0;
 let isReady = false;
-const QR_TTL_MS = 20000;
 
 export function initWhatsApp(): void {
   qrCodeData = null;
-  qrGeneratedAt = 0;
   isReady = false;
 
   client = new Client({
@@ -34,7 +31,6 @@ export function initWhatsApp(): void {
 
   client.on('qr', (qr: string) => {
     qrCodeData = qr;
-    qrGeneratedAt = Date.now();
     isReady = false;
     logger.info('QR Code recebido! Escaneie pelo WhatsApp:');
     qrTerminal.generate(qr, { small: true });
@@ -93,17 +89,14 @@ export function initWhatsApp(): void {
 }
 
 export async function getStatus(): Promise<{ connected: boolean; qrCode: string | null }> {
-  const qrExpired = !qrCodeData || (Date.now() - qrGeneratedAt) > QR_TTL_MS;
   let qrImage: string | null = null;
-
-  if (!qrExpired) {
+  if (qrCodeData) {
     try {
-      qrImage = await QRCode.toDataURL(qrCodeData!, { width: 280, margin: 2 });
+      qrImage = await QRCode.toDataURL(qrCodeData, { width: 280, margin: 2 });
     } catch {
       qrImage = null;
     }
   }
-
   return { connected: isReady, qrCode: qrImage };
 }
 
