@@ -118,7 +118,7 @@ export function initWhatsApp(): void {
       const reply = await tenantStorage.run(whatsappTenantContext, () =>
         handleMessage(message.from, message.body)
       );
-      if (reply) await client.sendMessage(message.from, reply);
+      if (reply && client) await client.sendMessage(message.from, reply);
     } catch (err: any) {
       logger.error(`[WhatsApp Bot] Erro ao processar mensagem de ${message.from}: ${err.message}`);
     }
@@ -163,7 +163,7 @@ function formatPhone(phone: string): string {
 }
 
 export const sendTextMessage = async (to: string, text: string) => {
-  if (!isReady) {
+  if (!isReady || !client) {
     throw new Error('WhatsApp não está conectado. Escaneie o QR Code primeiro.');
   }
   const chatId = formatPhone(to);
