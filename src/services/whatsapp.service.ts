@@ -1,9 +1,28 @@
 import { Client, LocalAuth, Message } from 'whatsapp-web.js';
 import qrTerminal from 'qrcode-terminal';
 import QRCode from 'qrcode';
+import fs from 'fs';
+import path from 'path';
 import logger from '../utils/logger';
 import { handleMessage } from './chatbot.service';
 import { tenantStorage } from '../database/tenantContext';
+
+function removeSingletonLock(dataPath: string): void {
+  try {
+    // whatsapp-web.js LocalAuth usa dataPath/session-{clientId} como userDataDir do Chromium
+    const sessionDir = path.join(dataPath, 'session-');
+    const lockFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
+    for (const f of lockFiles) {
+      const lockPath = path.join(sessionDir, f);
+      if (fs.existsSync(lockPath)) {
+        fs.unlinkSync(lockPath);
+        console.log(`[WhatsApp] Lock removido: ${lockPath}`);
+      }
+    }
+  } catch (e: any) {
+    console.warn('[WhatsApp] Não foi possível remover lock:', e.message);
+  }
+}
 
 let client: Client;
 let qrCodeData: string | null = null;
@@ -89,6 +108,7 @@ export function initWhatsApp(): void {
     }
   });
 
+  removeSingletonLock(dataPath);
   console.log('[WhatsApp] Iniciando client... aguarde o QR Code.');
   client.initialize().catch((err: any) => {
     console.error('[WhatsApp] Erro ao inicializar:', err.message || err);
