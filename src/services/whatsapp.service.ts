@@ -7,9 +7,15 @@ import { tenantStorage } from '../database/tenantContext';
 
 let client: Client;
 let qrCodeData: string | null = null;
+let qrGeneratedAt: number = 0;
 let isReady = false;
+const QR_TTL_MS = 20000;
 
 export function initWhatsApp(): void {
+  qrCodeData = null;
+  qrGeneratedAt = 0;
+  isReady = false;
+
   client = new Client({
     authStrategy: new LocalAuth({ dataPath: process.env.WWEBJS_DATA_PATH || '.wwebjs_auth' }),
     puppeteer: {
@@ -28,6 +34,7 @@ export function initWhatsApp(): void {
 
   client.on('qr', (qr: string) => {
     qrCodeData = qr;
+    qrGeneratedAt = Date.now();
     isReady = false;
     logger.info('QR Code recebido! Escaneie pelo WhatsApp:');
     qrTerminal.generate(qr, { small: true });
@@ -45,12 +52,18 @@ export function initWhatsApp(): void {
 
   client.on('auth_failure', (msg: string) => {
     isReady = false;
+    qrCodeData = null;
     logger.error('Falha na autenticação do WhatsApp:', msg);
+    logger.info('[WhatsApp] Reiniciando em 5s após auth_failure...');
+    setTimeout(() => initWhatsApp(), 5000);
   });
 
   client.on('disconnected', (reason: string) => {
     isReady = false;
+    qrCodeData = null;
     logger.warn('WhatsApp desconectado:', reason);
+    logger.info('[WhatsApp] Reiniciando em 5s após desconexão...');
+    setTimeout(() => initWhatsApp(), 5000);
   });
 
   const whatsappTenantContext = {
@@ -80,15 +93,24 @@ export function initWhatsApp(): void {
 }
 
 export async function getStatus(): Promise<{ connected: boolean; qrCode: string | null }> {
+  const qrExpired = !qrCodeData || (Date.now() - qrGeneratedAt) > QR_TTL_MS;
   let qrImage: string | null = null;
-  if (qrCodeData) {
+
+  if (!qrExpired) {
     try {
-      qrImage = await QRCode.toDataURL(qrCodeData, { width: 280, margin: 2 });
+      qrImage = await QRCode.toDataURL(qrCodeData!, { width: 280, margin: 2 });
     } catch {
       qrImage = null;
     }
   }
+
   return { connected: isReady, qrCode: qrImage };
+}
+
+export function restartWhatsApp(): void {
+  logger.info('[WhatsApp] Restart solicitado manualmente.');
+  try { client?.destroy(); } catch { /* ignora erros no destroy */ }
+  setTimeout(() => initWhatsApp(), 1000);
 }
 
 function formatPhone(phone: string): string {
