@@ -30,6 +30,7 @@ let client: Client | null = null;
 let qrCodeData: string | null = null;
 let isReady = false;
 let initializing = false;
+let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function initWhatsApp(): void {
   if (initializing) {
@@ -40,10 +41,15 @@ export function initWhatsApp(): void {
   qrCodeData = null;
   isReady = false;
 
+  if (watchdogTimer) { clearTimeout(watchdogTimer); watchdogTimer = null; }
+
   if (client) {
     try { client.removeAllListeners(); client.destroy(); } catch { /* ignora */ }
     client = null;
   }
+
+  // Matar processos Chromium stale que possam ter sobrado
+  try { execSync('pkill -f chromium || true', { stdio: 'ignore' }); } catch { /* ignora */ }
 
   const execPath = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
   const dataPath = process.env.WWEBJS_DATA_PATH || '.wwebjs_auth';
@@ -76,6 +82,7 @@ export function initWhatsApp(): void {
   });
 
   client.on('ready', () => {
+    if (watchdogTimer) { clearTimeout(watchdogTimer); watchdogTimer = null; }
     isReady = true;
     qrCodeData = null;
     initializing = false;
@@ -84,8 +91,10 @@ export function initWhatsApp(): void {
 
   client.on('authenticated', () => {
     logger.info('WhatsApp autenticado!');
-    // Watchdog: reinicia se ready não disparar em 3 minutos
-    setTimeout(() => {
+    // Watchdog único: reinicia se ready não disparar em 3 minutos
+    if (watchdogTimer) clearTimeout(watchdogTimer);
+    watchdogTimer = setTimeout(() => {
+      watchdogTimer = null;
       if (!isReady) {
         console.warn('[WhatsApp] Timeout: ready não disparou após autenticação. Reiniciando...');
         initializing = false;
