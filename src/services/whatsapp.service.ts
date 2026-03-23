@@ -41,7 +41,7 @@ export function initWhatsApp(): void {
   isReady = false;
 
   if (client) {
-    try { client.destroy(); } catch { /* ignora */ }
+    try { client.removeAllListeners(); client.destroy(); } catch { /* ignora */ }
     client = null;
   }
 
@@ -152,7 +152,9 @@ export async function getStatus(): Promise<{ connected: boolean; qrCode: string 
 
 export function restartWhatsApp(): void {
   logger.info('[WhatsApp] Restart solicitado manualmente.');
-  try { client?.destroy(); } catch { /* ignora erros no destroy */ }
+  initializing = false;
+  try { client?.removeAllListeners(); client?.destroy(); } catch { /* ignora erros no destroy */ }
+  client = null;
   setTimeout(() => initWhatsApp(), 1000);
 }
 
