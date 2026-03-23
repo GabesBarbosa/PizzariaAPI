@@ -4,10 +4,7 @@
 name: Build and deploy Node.js app to Azure Web App - comandaapi
 
 on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
+  workflow_dispatch: # desativado: deploy é feito via deploy.yml (Docker)
 
 jobs:
   build:
