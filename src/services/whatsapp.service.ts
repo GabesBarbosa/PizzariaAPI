@@ -13,11 +13,17 @@ export function initWhatsApp(): void {
   qrCodeData = null;
   isReady = false;
 
+  const execPath = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
+  const dataPath = process.env.WWEBJS_DATA_PATH || '.wwebjs_auth';
+  console.log(`[WhatsApp] dataPath: ${dataPath}`);
+  console.log(`[WhatsApp] executablePath: ${execPath || '(bundled)'}`);
+  console.log(`[WhatsApp] platform: ${process.platform}`);
+
   client = new Client({
-    authStrategy: new LocalAuth({ dataPath: process.env.WWEBJS_DATA_PATH || '.wwebjs_auth' }),
+    authStrategy: new LocalAuth({ dataPath }),
     puppeteer: {
       headless: true,
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      executablePath: execPath,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -30,6 +36,7 @@ export function initWhatsApp(): void {
   });
 
   client.on('qr', (qr: string) => {
+    console.log('[WhatsApp] QR event disparado, gerando imagem...');
     qrCodeData = qr;
     isReady = false;
     logger.info('QR Code recebido! Escaneie pelo WhatsApp:');
@@ -85,15 +92,19 @@ export function initWhatsApp(): void {
   console.log('[WhatsApp] Iniciando client... aguarde o QR Code.');
   client.initialize().catch((err: any) => {
     console.error('[WhatsApp] Erro ao inicializar:', err.message || err);
+    console.error('[WhatsApp] Stack:', err.stack || '(sem stack)');
   });
 }
 
 export async function getStatus(): Promise<{ connected: boolean; qrCode: string | null }> {
+  console.log(`[WhatsApp] getStatus chamado — isReady: ${isReady}, temQR: ${!!qrCodeData}`);
   let qrImage: string | null = null;
   if (qrCodeData) {
     try {
       qrImage = await QRCode.toDataURL(qrCodeData, { width: 280, margin: 2 });
-    } catch {
+      console.log('[WhatsApp] QR image gerada com sucesso');
+    } catch (e: any) {
+      console.error('[WhatsApp] Erro ao gerar QR image:', e.message);
       qrImage = null;
     }
   }
