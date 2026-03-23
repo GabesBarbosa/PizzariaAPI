@@ -9,16 +9,28 @@ import { tenantStorage } from '../database/tenantContext';
 
 function removeSingletonLock(dataPath: string): void {
   try {
-    // whatsapp-web.js LocalAuth usa dataPath/session-{clientId} como userDataDir do Chromium
-    const sessionDir = path.join(dataPath, 'session-');
-    const lockFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
-    for (const f of lockFiles) {
-      const lockPath = path.join(sessionDir, f);
-      if (fs.existsSync(lockPath)) {
-        fs.unlinkSync(lockPath);
-        console.log(`[WhatsApp] Lock removido: ${lockPath}`);
-      }
+    if (!fs.existsSync(dataPath)) {
+      console.log(`[WhatsApp] dataPath não existe ainda: ${dataPath}`);
+      return;
     }
+    console.log(`[WhatsApp] Conteúdo de ${dataPath}:`, fs.readdirSync(dataPath));
+
+    const lockFileNames = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
+
+    const removeLocks = (dir: string) => {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          removeLocks(fullPath);
+        } else if (lockFileNames.includes(entry.name)) {
+          fs.unlinkSync(fullPath);
+          console.log(`[WhatsApp] Lock removido: ${fullPath}`);
+        }
+      }
+    };
+
+    removeLocks(dataPath);
   } catch (e: any) {
     console.warn('[WhatsApp] Não foi possível remover lock:', e.message);
   }
