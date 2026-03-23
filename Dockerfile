@@ -1,5 +1,5 @@
 # Stage 1: build
-FROM node:18-bullseye AS builder
+FROM node:18-bookworm AS builder
 WORKDIR /app
 
 # Copia package.json e package-lock e instala dependências (inclui dev)
@@ -11,11 +11,18 @@ COPY . .
 RUN npm run build
 
 # Stage 2: runtime
-FROM node:18-bullseye-slim AS runtime
+FROM node:18-bookworm-slim AS runtime
 
-# Instala Chromium (apt resolve as dependências automaticamente)
+# Instala Chromium e dependências necessárias
 RUN apt-get update && apt-get install -y \
     chromium \
+    fonts-liberation \
+    libnss3 \
+    libatk-bridge2.0-0 \
+    libdrm2 \
+    libxkbcommon0 \
+    libgbm1 \
+    libasound2 \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
