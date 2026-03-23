@@ -113,6 +113,8 @@ export function initWhatsApp(): void {
   client.initialize().catch((err: any) => {
     console.error('[WhatsApp] Erro ao inicializar:', err.message || err);
     console.error('[WhatsApp] Stack:', err.stack || '(sem stack)');
+    console.log('[WhatsApp] Reiniciando em 10s após falha no initialize...');
+    setTimeout(() => initWhatsApp(), 10000);
   });
 }
 
