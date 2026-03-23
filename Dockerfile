@@ -42,8 +42,6 @@ COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/src ./src
-COPY --from=builder /app/.wwebjs_auth ./ .wwebjs_auth || true
-
 # Cria pasta de sessão do whatsapp-web.js e garante permissão
 RUN mkdir -p /app/.wwebjs_auth && chown -R node:node /app/.wwebjs_auth
 

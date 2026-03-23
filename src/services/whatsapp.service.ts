@@ -11,9 +11,10 @@ let isReady = false;
 
 export function initWhatsApp(): void {
   client = new Client({
-    authStrategy: new LocalAuth({ dataPath: '.wwebjs_auth' }),
+    authStrategy: new LocalAuth({ dataPath: process.env.WWEBJS_DATA_PATH || '.wwebjs_auth' }),
     puppeteer: {
       headless: true,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
