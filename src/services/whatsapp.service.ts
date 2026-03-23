@@ -3,46 +3,47 @@ import qrTerminal from 'qrcode-terminal';
 import QRCode from 'qrcode';
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 import logger from '../utils/logger';
 import { handleMessage } from './chatbot.service';
 import { tenantStorage } from '../database/tenantContext';
 
 function removeSingletonLock(dataPath: string): void {
   try {
+    console.log(`[WhatsApp] removeSingletonLock iniciado para: ${dataPath}`);
     if (!fs.existsSync(dataPath)) {
-      console.log(`[WhatsApp] dataPath não existe ainda: ${dataPath}`);
+      console.log(`[WhatsApp] dataPath não existe: ${dataPath}`);
       return;
     }
-    console.log(`[WhatsApp] Conteúdo de ${dataPath}:`, fs.readdirSync(dataPath));
-
-    const lockFileNames = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
-
-    const removeLocks = (dir: string) => {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        const fullPath = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          removeLocks(fullPath);
-        } else if (lockFileNames.includes(entry.name)) {
-          fs.unlinkSync(fullPath);
-          console.log(`[WhatsApp] Lock removido: ${fullPath}`);
-        }
-      }
-    };
-
-    removeLocks(dataPath);
+    const found = execSync(`find "${dataPath}" \\( -name "SingletonLock" -o -name "SingletonCookie" -o -name "SingletonSocket" \\) 2>/dev/null || true`, { encoding: 'utf8' }).trim();
+    console.log(`[WhatsApp] Locks encontrados: ${found || '(nenhum)'}`);
+    if (found) {
+      execSync(`find "${dataPath}" \\( -name "SingletonLock" -o -name "SingletonCookie" -o -name "SingletonSocket" \\) -delete 2>/dev/null || true`);
+      console.log('[WhatsApp] Locks removidos com sucesso');
+    }
   } catch (e: any) {
-    console.warn('[WhatsApp] Não foi possível remover lock:', e.message);
+    console.warn('[WhatsApp] Erro ao remover lock:', e.message);
   }
 }
 
-let client: Client;
+let client: Client | null = null;
 let qrCodeData: string | null = null;
 let isReady = false;
+let initializing = false;
 
 export function initWhatsApp(): void {
+  if (initializing) {
+    console.log('[WhatsApp] Já inicializando, ignorando chamada duplicada.');
+    return;
+  }
+  initializing = true;
   qrCodeData = null;
   isReady = false;
+
+  if (client) {
+    try { client.destroy(); } catch { /* ignora */ }
+    client = null;
+  }
 
   const execPath = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
   const dataPath = process.env.WWEBJS_DATA_PATH || '.wwebjs_auth';
@@ -77,6 +78,7 @@ export function initWhatsApp(): void {
   client.on('ready', () => {
     isReady = true;
     qrCodeData = null;
+    initializing = false;
     logger.info('WhatsApp conectado com sucesso!');
   });
 
@@ -87,6 +89,7 @@ export function initWhatsApp(): void {
   client.on('auth_failure', (msg: string) => {
     isReady = false;
     qrCodeData = null;
+    initializing = false;
     logger.error('Falha na autenticação do WhatsApp:', msg);
     logger.info('[WhatsApp] Reiniciando em 5s após auth_failure...');
     setTimeout(() => initWhatsApp(), 5000);
@@ -95,6 +98,7 @@ export function initWhatsApp(): void {
   client.on('disconnected', (reason: string) => {
     isReady = false;
     qrCodeData = null;
+    initializing = false;
     logger.warn('WhatsApp desconectado:', reason);
     logger.info('[WhatsApp] Reiniciando em 5s após desconexão...');
     setTimeout(() => initWhatsApp(), 5000);
@@ -125,6 +129,7 @@ export function initWhatsApp(): void {
   client.initialize().catch((err: any) => {
     console.error('[WhatsApp] Erro ao inicializar:', err.message || err);
     console.error('[WhatsApp] Stack:', err.stack || '(sem stack)');
+    initializing = false;
     console.log('[WhatsApp] Reiniciando em 10s após falha no initialize...');
     setTimeout(() => initWhatsApp(), 10000);
   });
