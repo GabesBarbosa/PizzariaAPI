@@ -84,6 +84,16 @@ export function initWhatsApp(): void {
 
   client.on('authenticated', () => {
     logger.info('WhatsApp autenticado!');
+    // Watchdog: reinicia se ready não disparar em 3 minutos
+    setTimeout(() => {
+      if (!isReady) {
+        console.warn('[WhatsApp] Timeout: ready não disparou após autenticação. Reiniciando...');
+        initializing = false;
+        try { client?.removeAllListeners(); client?.destroy(); } catch {}
+        client = null;
+        initWhatsApp();
+      }
+    }, 3 * 60 * 1000);
   });
 
   client.on('auth_failure', (msg: string) => {
