@@ -63,19 +63,25 @@ export function initWhatsApp(): void {
     authStrategy: new LocalAuth({ dataPath }),
     webVersion: '2.2412.54',
     webVersionCache: {
-      type: 'remote',
-      remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
+      type: 'local',
+      path: process.env.WWEBJS_CACHE_PATH || '/tmp/wwebjs_cache',
     },
     puppeteer: {
       headless: true,
       executablePath: execPath,
+      timeout: 60000,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-accelerated-2d-canvas',
+        '--disable-gpu',
         '--no-first-run',
-        '--disable-gpu'
+        '--no-zygote',
+        '--single-process',
+        '--disable-extensions',
+        '--disable-background-networking',
+        '--disable-default-apps',
       ]
     }
   });
