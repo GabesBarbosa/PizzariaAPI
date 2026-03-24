@@ -12,4 +12,5 @@ export interface CreateOrderDTO {
   deliveryAddress?: string;
   notes?: string;
   deliveryFee?: number;
+  channel?: string;
 }

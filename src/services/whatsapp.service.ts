@@ -9,6 +9,31 @@ import { handleMessage } from './chatbot.service';
 import { tenantStorage } from '../database/tenantContext';
 import { broadcast } from './notification.service';
 
+/*
+ * Monkey-patch: Client.inject falha com "Execution context was destroyed" quando
+ * o WhatsApp Web faz uma navegação interna logo após o carregamento da página.
+ * Este patch retenta até 5x com backoff exponencial, aguardando o context se estabilizar.
+ */
+(function patchInject() {
+  const proto = (Client as any).prototype;
+  const original = proto.inject;
+  proto.inject = async function (page: any) {
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      try {
+        return await original.call(this, page);
+      } catch (err: any) {
+        if (err.message?.includes('Execution context was destroyed') && attempt < 5) {
+          const delay = attempt * 2000;
+          console.log(`[WhatsApp] inject tentativa ${attempt}/5 falhou — aguardando ${delay}ms para o context estabilizar...`);
+          await new Promise(r => setTimeout(r, delay));
+        } else {
+          throw err;
+        }
+      }
+    }
+  };
+}());
+
 function removeSingletonLock(dataPath: string): void {
   try {
     console.log(`[WhatsApp] removeSingletonLock iniciado para: ${dataPath}`);
@@ -77,7 +102,7 @@ export function initWhatsApp(): void {
         '--disable-accelerated-2d-canvas',
         '--disable-gpu',
         '--no-first-run',
-        '--no-zygote',
+        '--single-process',          // necessário em containers Azure (evita fork de renderer)
         '--disable-extensions',
         '--disable-background-networking',
         '--disable-default-apps',

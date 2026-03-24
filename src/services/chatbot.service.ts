@@ -177,6 +177,7 @@ async function executeTool(
 
       case 'find_or_create_customer': {
         if (session.customerId) {
+          logger.info(`[Chatbot] find_or_create_customer: sessão já tem customerId=${session.customerId} (${session.customerName})`);
           return JSON.stringify({
             customerId: session.customerId,
             customerName: session.customerName,
@@ -184,11 +185,13 @@ async function executeTool(
             isNew: false,
           });
         }
+        logger.info(`[Chatbot] find_or_create_customer: buscando telefone=${cleanPhone}, create_new=${input.create_new}`);
         const found = await customerRepo.findCustomersByNameOrPhone(cleanPhone);
         if (found.length > 0) {
           session.customerId = found[0].id;
           session.customerName = found[0].name;
           session.savedAddress = found[0].address || undefined;
+          logger.info(`[Chatbot] Cliente encontrado: id=${found[0].id}, nome=${found[0].name}`);
           return JSON.stringify({
             customerId: found[0].id,
             customerName: found[0].name,
@@ -203,8 +206,10 @@ async function executeTool(
           session.customerId   = customer.id;
           session.customerName = input.name;
           session.savedAddress = input.address;
+          logger.info(`[Chatbot] Cliente CRIADO: id=${customer.id}, nome=${input.name}, telefone=${cleanPhone}`);
           return JSON.stringify({ customerId: customer.id, customerName: input.name, savedAddress: input.address, isNew: true });
         }
+        logger.info(`[Chatbot] Cliente não encontrado para telefone=${cleanPhone}, aguardando dados para cadastro`);
         return JSON.stringify({ found: false, message: 'Cliente não encontrado. Colete nome e endereço para cadastro.' });
       }
 
@@ -249,7 +254,10 @@ async function executeTool(
 
       case 'create_order': {
         if (session.cart.length === 0) return JSON.stringify({ error: 'Carrinho vazio' });
-        if (!session.customerId) return JSON.stringify({ error: 'Cliente não identificado' });
+        if (!session.customerId) {
+          logger.error(`[Chatbot] create_order chamado sem customerId! telefone=${phone}`);
+          return JSON.stringify({ error: 'Cliente não identificado. Por favor, faça o cadastro primeiro.' });
+        }
 
         const isPickup = input.delivery_address === 'RETIRADA NO LOCAL';
         const deliveryFee = isPickup ? 0 : await getDeliveryFee();
@@ -261,6 +269,8 @@ async function executeTool(
           halfProductId: item.halfProductId,
         }));
 
+        logger.info(`[Chatbot] Criando pedido: customerId=${session.customerId}, itens=${items.length}, entrega=${input.delivery_address}, pagamento=${input.payment_method}, taxa=${deliveryFee}`);
+
         const order = await createOrder({
           customerId:      session.customerId,
           items,
@@ -268,10 +278,15 @@ async function executeTool(
           deliveryAddress: !isPickup ? input.delivery_address : undefined,
           deliveryFee,
           notes:           'Pedido via WhatsApp (IA)',
+          channel:         'whatsapp',
         });
 
-        if (input.delivery_address !== 'RETIRADA NO LOCAL' && session.customerId) {
-          await customerRepo.updateCustomer(session.customerId, { address: input.delivery_address }).catch(() => {});
+        logger.info(`[Chatbot] Pedido CRIADO: id=${order.id}, total=${order.total}, customerId=${session.customerId}`);
+
+        if (!isPickup && session.customerId) {
+          await customerRepo.updateCustomer(session.customerId, { address: input.delivery_address }).catch((e: any) => {
+            logger.warn(`[Chatbot] Falha ao atualizar endereço do cliente: ${e.message}`);
+          });
         }
 
         broadcast('new-order', {
@@ -289,7 +304,8 @@ async function executeTool(
         return JSON.stringify({ error: `Ferramenta desconhecida: ${name}` });
     }
   } catch (err: any) {
-    logger.error(`[Chatbot Tool] ${name} erro: ${err.message}`);
+    logger.error(`[Chatbot Tool] ${name} ERRO: ${err.message}`);
+    logger.error(`[Chatbot Tool] Stack: ${err.stack || '(sem stack)'}`);
     return JSON.stringify({ error: err.message });
   }
 }
