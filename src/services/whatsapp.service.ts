@@ -59,7 +59,7 @@ let initializing = false;
 let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
 const processedMessages = new Set<string>();
 
-export function initWhatsApp(): void {
+export async function initWhatsApp(): Promise<void> {
   if (initializing) {
     console.log('[WhatsApp] Já inicializando, ignorando chamada duplicada.');
     return;
