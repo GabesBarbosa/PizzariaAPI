@@ -200,8 +200,24 @@ export async function initWhatsApp(): Promise<void> {
       processedMessages.add(msgId);
       setTimeout(() => processedMessages.delete(msgId), 60_000);
 
+      // Resolve o número real do cliente — contas novas usam LID e message.from
+      // retorna um ID interno (ex: 12692333056044) ao invés do telefone real.
+      // getContact().number retorna o número real (ex: 5511945175747).
+      let phoneForBot = message.from;
+      try {
+        const contact = await (message as any).getContact();
+        if (contact?.number) {
+          phoneForBot = contact.number + '@c.us';
+          if (phoneForBot !== message.from) {
+            console.log(`[WhatsApp] LID resolvido: ${message.from} → ${phoneForBot}`);
+          }
+        }
+      } catch {
+        // fallback: usa message.from (pode ser LID, mas é o que temos)
+      }
+
       const reply = await tenantStorage.run(whatsappTenantContext, () =>
-        handleMessage(message.from, message.body)
+        handleMessage(phoneForBot, message.body)
       );
       if (reply && client) await client.sendMessage(message.from, reply);
     } catch (err: any) {

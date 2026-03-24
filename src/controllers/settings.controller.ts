@@ -1,10 +1,24 @@
 import { Request, Response, NextFunction } from 'express';
-import { getDeliveryFee, setSetting } from '../repositories/settings.repository';
+import { getDeliveryFee, setSetting, getChatbotMode } from '../repositories/settings.repository';
 
 export const getSettings = async (_req: Request, res: Response, next: NextFunction) => {
   try {
-    const deliveryFee = await getDeliveryFee();
-    res.json({ deliveryFee });
+    const [deliveryFee, chatbotMode] = await Promise.all([getDeliveryFee(), getChatbotMode()]);
+    res.json({ deliveryFee, chatbotMode });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const updateChatbotMode = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { mode } = req.body;
+    if (mode !== 'ai' && mode !== 'triggers') {
+      res.status(400).json({ message: 'Modo inválido. Use "ai" ou "triggers".' });
+      return;
+    }
+    await setSetting('chatbotMode', mode);
+    res.json({ chatbotMode: mode });
   } catch (err) {
     next(err);
   }

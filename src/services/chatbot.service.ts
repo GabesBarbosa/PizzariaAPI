@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as customerRepo from '../repositories/customer.repository';
 import * as productRepo from '../repositories/product.repository';
 import { createOrder } from '../repositories/order.repository';
-import { getDeliveryFee } from '../repositories/settings.repository';
+import { getDeliveryFee, getChatbotMode } from '../repositories/settings.repository';
 import { CreateOrderItemDTO } from '../dtos/order.dto';
 import { broadcast } from './notification.service';
 import logger from '../utils/logger';
@@ -399,11 +399,18 @@ export async function handleMessage(phone: string, body: string): Promise<string
 
   session.processing = true;
   try {
-    const [products, deliveryFee] = await Promise.all([loadProducts(), getDeliveryFee()]);
+    const [products, deliveryFee, chatbotMode] = await Promise.all([
+      loadProducts(), getDeliveryFee(), getChatbotMode(),
+    ]);
 
-    // Verifica triggers antes de gastar tokens da IA
+    // Verifica triggers antes de gastar tokens da IA (funciona em ambos os modos)
     const triggerReply = checkTriggers(body, products, session, deliveryFee);
     if (triggerReply) return triggerReply;
+
+    // Modo triggers: não chama a IA, apenas responde padrões conhecidos
+    if (chatbotMode === 'triggers') {
+      return ''; // sem resposta — operador atende manualmente
+    }
 
     const feeText = deliveryFee > 0 ? brl(deliveryFee) : 'grátis';
 
@@ -421,12 +428,12 @@ ${buildMenuText(products)}
 
 1. **Identificação** — Chame find_or_create_customer imediatamente.
    - Cliente já cadastrado: cumprimente pelo nome e siga para o pedido.
-   - Cliente novo: informe que é necessário fazer um cadastro rápido e colete:
+   - Cliente novo: colete apenas:
      a) Nome completo
-     b) Endereço completo com DDD da cidade (rua, número, bairro, cidade — ex: "Rua das Flores 123, Jardim Sul, São Paulo - SP (DDD 11)")
+     b) Endereço de entrega (rua, número e bairro)
      Só então chame find_or_create_customer com create_new=true, name e address.
-   ⚠️ NUNCA avance para o pedido sem o cliente estar cadastrado com nome e endereço completo.
-   ℹ️ O número de telefone é capturado automaticamente pelo WhatsApp — não peça ao cliente.
+   ⚠️ NUNCA avance para o pedido sem nome e endereço. Não peça mais nada além disso.
+   ℹ️ O telefone é capturado automaticamente — não peça ao cliente.
 
 2. **Pedido** — Ajude o cliente a escolher os itens. Use add_to_cart para cada item.
 

@@ -63,6 +63,17 @@ export const setSetting = async (key: string, value: string): Promise<void> => {
   }
 };
 
+export type ChatbotMode = 'ai' | 'triggers';
+
+export const getChatbotMode = async (): Promise<ChatbotMode> => {
+  try {
+    const v = await getSetting('chatbotMode');
+    return (v === 'triggers' ? 'triggers' : 'ai') as ChatbotMode;
+  } catch {
+    return 'ai';
+  }
+};
+
 export const getDeliveryFee = async (): Promise<number> => {
   try {
     const v = await getSetting('deliveryFee');
