@@ -1,29 +1,23 @@
+import Anthropic from '@anthropic-ai/sdk';
 import * as customerRepo from '../repositories/customer.repository';
 import * as productRepo from '../repositories/product.repository';
 import { createOrder } from '../repositories/order.repository';
-import { CreateOrderDTO, CreateOrderItemDTO } from '../dtos/order.dto';
+import { CreateOrderItemDTO } from '../dtos/order.dto';
 import { broadcast } from './notification.service';
 import logger from '../utils/logger';
 
-/* ─── State Machine ─── */
+/* ─── Cliente Anthropic ─── */
 
-enum State {
-  IDLE,
-  ASK_NAME,
-  MAIN_MENU,
-  SELECT_CATEGORY,
-  SELECT_PRODUCT,
-  SELECT_SIZE,
-  ASK_HALF,
-  SELECT_HALF_PRODUCT,
-  SELECT_QUANTITY,
-  MORE_ITEMS,
-  ASK_ADDRESS,
-  ASK_PAYMENT,
-  CONFIRM_ORDER,
-}
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-/* ─── Types ─── */
+/* ─── Constantes ─── */
+
+const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
+const BROTINHO_MULTIPLIER = 0.65;
+const PRODUCT_CACHE_TTL = 5 * 60 * 1000;
+const MAX_HISTORY = 20; // mensagens máximas no histórico (controle de custo)
+
+/* ─── Tipos ─── */
 
 interface CartItem {
   productId: string;
@@ -36,34 +30,15 @@ interface CartItem {
 }
 
 interface Session {
-  state: State;
+  messages: Anthropic.MessageParam[];
+  cart: CartItem[];
   customerId?: string;
   customerName?: string;
-  cart: CartItem[];
-  // temp: item being built
-  pendingProductId?: string;
-  pendingProductName?: string;
-  pendingProductPrice?: number;
-  pendingCategory?: string;
-  pendingSize?: 'normal' | 'brotinho';
-  pendingHalfId?: string;
-  pendingHalfName?: string;
-  pendingHalfPrice?: number;
-  // cached reference data
-  categories?: string[];
-  categoryProducts?: any[];
-  deliveryAddress?: string;
-  paymentMethod?: string;
+  savedAddress?: string;
   lastActivity: number;
 }
 
-/* ─── Constants ─── */
-
-const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
-const BROTINHO_MULTIPLIER = 0.65;
-const PRODUCT_CACHE_TTL = 5 * 60 * 1000;
-
-/* ─── In-memory state ─── */
+/* ─── Estado em memória ─── */
 
 const sessions = new Map<string, Session>();
 let productsCache: any[] | null = null;
@@ -75,18 +50,23 @@ function brl(v: number): string {
   return v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
-function onlyDigits(s: string): string {
-  return s.replace(/\D/g, '');
-}
-
-/** Extract clean BR phone (e.g. 11999998888) from WhatsApp chatId 5511999998888@c.us */
 function extractPhone(chatId: string): string {
-  const digits = onlyDigits(chatId);
+  const digits = chatId.replace(/\D/g, '');
   return digits.startsWith('55') && digits.length >= 12 ? digits.slice(2) : digits;
 }
 
-function isPizza(category: string): boolean {
-  return category.toLowerCase().includes('pizza');
+function getSession(phone: string): Session {
+  let s = sessions.get(phone);
+  if (s && Date.now() - s.lastActivity > SESSION_TIMEOUT_MS) {
+    sessions.delete(phone);
+    s = undefined;
+  }
+  if (!s) {
+    s = { messages: [], cart: [], lastActivity: Date.now() };
+    sessions.set(phone, s);
+  }
+  s.lastActivity = Date.now();
+  return s;
 }
 
 async function loadProducts(): Promise<any[]> {
@@ -98,414 +78,311 @@ async function loadProducts(): Promise<any[]> {
   return productsCache!;
 }
 
-function getSession(phone: string): Session {
-  let s = sessions.get(phone);
-  if (s && Date.now() - s.lastActivity > SESSION_TIMEOUT_MS) {
-    sessions.delete(phone);
-    s = undefined;
+function buildMenuText(products: any[]): string {
+  const categories = [...new Set(products.map((p: any) => p.category))].sort() as string[];
+  let menu = '=== CARDÁPIO ===\n\n';
+  for (const cat of categories) {
+    menu += `[${cat}]\n`;
+    for (const p of products.filter((x: any) => x.category === cat)) {
+      menu += `  ID:${p.id} | ${p.name} | ${brl(parseFloat(p.price))}`;
+      if (p.description) menu += ` | ${p.description}`;
+      menu += '\n';
+    }
+    menu += '\n';
   }
-  if (!s) {
-    s = { state: State.IDLE, cart: [], lastActivity: Date.now() };
-    sessions.set(phone, s);
-  }
-  s.lastActivity = Date.now();
-  return s;
+  return menu;
 }
 
-function resetSession(phone: string): void {
-  sessions.delete(phone);
-}
+/* ─── Ferramentas (Tools) ─── */
 
-function calcUnitPrice(
-  base: number,
-  halfPrice: number | undefined,
-  size: 'normal' | 'brotinho',
-): number {
-  let price = halfPrice != null ? Math.max(base, halfPrice) : base;
-  if (size === 'brotinho') price = Math.round(price * BROTINHO_MULTIPLIER * 100) / 100;
-  return price;
-}
+const tools: Anthropic.Tool[] = [
+  {
+    name: 'find_or_create_customer',
+    description: 'Busca o cliente pelo telefone cadastrado. Se não existir, cria o cadastro com nome e endereço — ambos obrigatórios para novos clientes.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        name:       { type: 'string',  description: 'Nome completo do cliente — obrigatório para cadastro' },
+        address:    { type: 'string',  description: 'Endereço completo do cliente — obrigatório para cadastro' },
+        create_new: { type: 'boolean', description: 'true para criar o cadastro com nome e endereço fornecidos' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'add_to_cart',
+    description: 'Adiciona um item ao carrinho. Para pizzas meio a meio, informe também o segundo sabor.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        product_id:        { type: 'string', description: 'ID do produto (conforme cardápio)' },
+        product_name:      { type: 'string', description: 'Nome do produto' },
+        quantity:          { type: 'number', description: 'Quantidade (1-50)' },
+        size:              { type: 'string', enum: ['normal', 'brotinho'], description: 'Tamanho — brotinho = 65% do preço normal' },
+        unit_price:        { type: 'number', description: 'Preço unitário já calculado (considere tamanho e meio a meio)' },
+        half_product_id:   { type: 'string', description: 'ID do segundo sabor (pizza meio a meio)' },
+        half_product_name: { type: 'string', description: 'Nome do segundo sabor (pizza meio a meio)' },
+      },
+      required: ['product_id', 'product_name', 'quantity', 'size', 'unit_price'],
+    },
+  },
+  {
+    name: 'remove_from_cart',
+    description: 'Remove um item do carrinho pelo índice (0-based).',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        index: { type: 'number', description: 'Índice do item a remover (0-based)' },
+      },
+      required: ['index'],
+    },
+  },
+  {
+    name: 'view_cart',
+    description: 'Retorna o conteúdo atual do carrinho com itens e total.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'create_order',
+    description: 'Cria o pedido final com os itens do carrinho. Só chamar após confirmação explícita do cliente.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        delivery_address: { type: 'string', description: 'Endereço completo de entrega ou "RETIRADA NO LOCAL"' },
+        payment_method:   { type: 'string', enum: ['Dinheiro', 'Cartão', 'PIX'], description: 'Forma de pagamento' },
+      },
+      required: ['delivery_address', 'payment_method'],
+    },
+  },
+];
 
-/* ─── Entry point (called from whatsapp.service) ─── */
+/* ─── Execução das ferramentas ─── */
 
-export async function handleMessage(phone: string, body: string): Promise<string> {
-  const msg = body.trim();
-  const session = getSession(phone);
-
-  if (msg.toLowerCase() === 'cancelar' && session.state !== State.IDLE) {
-    resetSession(phone);
-    return '❌ Pedido cancelado.\n\nDigite *oi* para começar um novo pedido!';
-  }
+async function executeTool(
+  phone: string,
+  name: string,
+  input: any,
+  session: Session,
+): Promise<string> {
+  const cleanPhone = extractPhone(phone);
 
   try {
-    switch (session.state) {
-      case State.IDLE:                return onIdle(phone, msg, session);
-      case State.ASK_NAME:            return onAskName(phone, msg, session);
-      case State.MAIN_MENU:           return onMainMenu(msg, session);
-      case State.SELECT_CATEGORY:     return onSelectCategory(msg, session);
-      case State.SELECT_PRODUCT:      return onSelectProduct(msg, session);
-      case State.SELECT_SIZE:         return onSelectSize(msg, session);
-      case State.ASK_HALF:            return onAskHalf(msg, session);
-      case State.SELECT_HALF_PRODUCT: return onSelectHalfProduct(msg, session);
-      case State.SELECT_QUANTITY:     return onSelectQuantity(msg, session);
-      case State.MORE_ITEMS:          return onMoreItems(msg, session);
-      case State.ASK_ADDRESS:         return onAskAddress(msg, session);
-      case State.ASK_PAYMENT:         return onAskPayment(msg, session);
-      case State.CONFIRM_ORDER:       return onConfirmOrder(phone, msg, session);
+    switch (name) {
+
+      case 'find_or_create_customer': {
+        if (session.customerId) {
+          return JSON.stringify({
+            customerId: session.customerId,
+            customerName: session.customerName,
+            savedAddress: session.savedAddress,
+            isNew: false,
+          });
+        }
+        const found = await customerRepo.findCustomersByNameOrPhone(cleanPhone);
+        if (found.length > 0) {
+          session.customerId = found[0].id;
+          session.customerName = found[0].name;
+          session.savedAddress = found[0].address || undefined;
+          return JSON.stringify({
+            customerId: found[0].id,
+            customerName: found[0].name,
+            savedAddress: found[0].address || null,
+            isNew: false,
+          });
+        }
+        if (input.create_new) {
+          if (!input.name)    return JSON.stringify({ error: 'Nome é obrigatório para o cadastro.' });
+          if (!input.address) return JSON.stringify({ error: 'Endereço é obrigatório para o cadastro.' });
+          const customer = await customerRepo.createCustomer({ name: input.name, phone: cleanPhone, address: input.address });
+          session.customerId   = customer.id;
+          session.customerName = input.name;
+          session.savedAddress = input.address;
+          return JSON.stringify({ customerId: customer.id, customerName: input.name, savedAddress: input.address, isNew: true });
+        }
+        return JSON.stringify({ found: false, message: 'Cliente não encontrado. Colete nome e endereço para cadastro.' });
+      }
+
+      case 'add_to_cart': {
+        const item: CartItem = {
+          productId:       input.product_id,
+          productName:     input.product_name,
+          quantity:        Math.max(1, Math.min(50, Math.round(input.quantity))),
+          size:            input.size,
+          unitPrice:       input.unit_price,
+          halfProductId:   input.half_product_id,
+          halfProductName: input.half_product_name,
+        };
+        session.cart.push(item);
+        const total = session.cart.reduce((s, i) => s + i.unitPrice * i.quantity, 0);
+        return JSON.stringify({ success: true, cartItems: session.cart.length, cartTotal: brl(total) });
+      }
+
+      case 'remove_from_cart': {
+        const idx = input.index;
+        if (idx < 0 || idx >= session.cart.length) {
+          return JSON.stringify({ error: 'Índice inválido' });
+        }
+        session.cart.splice(idx, 1);
+        const total = session.cart.reduce((s, i) => s + i.unitPrice * i.quantity, 0);
+        return JSON.stringify({ success: true, cartItems: session.cart.length, cartTotal: brl(total) });
+      }
+
+      case 'view_cart': {
+        if (session.cart.length === 0) return JSON.stringify({ items: [], total: brl(0) });
+        const items = session.cart.map((item, i) => ({
+          index: i,
+          name: item.halfProductName ? `${item.productName} / ${item.halfProductName}` : item.productName,
+          size: item.size,
+          quantity: item.quantity,
+          unitPrice: brl(item.unitPrice),
+          subtotal: brl(item.unitPrice * item.quantity),
+        }));
+        const total = session.cart.reduce((s, i) => s + i.unitPrice * i.quantity, 0);
+        return JSON.stringify({ items, total: brl(total) });
+      }
+
+      case 'create_order': {
+        if (session.cart.length === 0) return JSON.stringify({ error: 'Carrinho vazio' });
+        if (!session.customerId) return JSON.stringify({ error: 'Cliente não identificado' });
+
+        const items: CreateOrderItemDTO[] = session.cart.map(item => ({
+          productId:     item.productId,
+          quantity:      item.quantity,
+          size:          item.size,
+          halfProductId: item.halfProductId,
+        }));
+
+        const order = await createOrder({
+          customerId:      session.customerId,
+          items,
+          paymentMethod:   input.payment_method,
+          deliveryAddress: input.delivery_address !== 'RETIRADA NO LOCAL' ? input.delivery_address : undefined,
+          notes:           'Pedido via WhatsApp (IA)',
+        });
+
+        if (input.delivery_address !== 'RETIRADA NO LOCAL' && session.customerId) {
+          await customerRepo.updateCustomer(session.customerId, { address: input.delivery_address }).catch(() => {});
+        }
+
+        broadcast('new-order', {
+          id: order.id,
+          customerName: session.customerName,
+          total: order.total,
+          itemCount: session.cart.reduce((s, i) => s + i.quantity, 0),
+        });
+
+        session.cart = [];
+        return JSON.stringify({ success: true, orderId: order.id, total: order.total });
+      }
+
       default:
-        resetSession(phone);
-        return 'Ops, algo deu errado. Digite *oi* para recomeçar.';
+        return JSON.stringify({ error: `Ferramenta desconhecida: ${name}` });
     }
   } catch (err: any) {
-    logger.error(`[Chatbot] Erro (${phone}): ${err.message}`);
-    resetSession(phone);
-    return '❌ Ocorreu um erro. Por favor, digite *oi* para recomeçar.';
+    logger.error(`[Chatbot Tool] ${name} erro: ${err.message}`);
+    return JSON.stringify({ error: err.message });
   }
 }
 
-/* ─── State handlers ─── */
+/* ─── Ponto de entrada ─── */
 
-async function onIdle(phone: string, msg: string, s: Session): Promise<string> {
-  const triggers = [
-    'oi', 'olá', 'ola', 'hi', 'hello', 'bom dia', 'boa tarde', 'boa noite',
-    'menu', 'cardápio', 'cardapio', 'pedir', 'pedido', 'quero',
-  ];
-  if (!triggers.some(t => msg.toLowerCase().includes(t))) {
-    return '👋 Olá! Sou o atendente virtual da *Pizzatec*! 🍕\n\nDigite *oi* para fazer seu pedido!';
-  }
+export async function handleMessage(phone: string, body: string): Promise<string> {
+  const session = getSession(phone);
 
-  const cleanPhone = extractPhone(phone);
-  const customers = await customerRepo.findCustomersByNameOrPhone(cleanPhone);
+  try {
+    const products = await loadProducts();
 
-  if (customers.length > 0) {
-    s.customerId = customers[0].id;
-    s.customerName = customers[0].name;
-    s.deliveryAddress = customers[0].address || undefined;
-    s.state = State.MAIN_MENU;
-    return `👋 Olá, *${s.customerName}*! Bem-vindo(a) de volta à *Pizzatec*! 🍕\n\n` + mainMenuText();
-  }
+    const systemPrompt = `Você é o atendente virtual da *Pizzatec* 🍕, uma pizzaria delivery. Atenda clientes pelo WhatsApp de forma natural, simpática e eficiente.
 
-  s.state = State.ASK_NAME;
-  return '👋 Olá! Bem-vindo(a) à *Pizzatec*! 🍕\n\n' +
-    'Parece que é sua primeira vez aqui! 😊\n' +
-    'Qual é o seu *nome*?';
-}
+${buildMenuText(products)}
 
-async function onAskName(phone: string, msg: string, s: Session): Promise<string> {
-  if (msg.length < 2) return 'Por favor, digite seu nome (mínimo 2 caracteres):';
+**Regras de negócio:**
+- Pizzas tamanho "brotinho" = ${Math.round(BROTINHO_MULTIPLIER * 100)}% do preço normal (${Math.round((1 - BROTINHO_MULTIPLIER) * 100)}% de desconto)
+- Pizza meio a meio: preço baseado no sabor mais caro entre os dois
+- Formas de pagamento aceitas: Dinheiro, Cartão (na entrega), PIX
 
-  const phoneClean = extractPhone(phone);
-  const customer = await customerRepo.createCustomer({ name: msg, phone: phoneClean });
+**FLUXO OBRIGATÓRIO — siga sempre nesta ordem:**
 
-  s.customerId = customer.id;
-  s.customerName = msg;
-  s.state = State.MAIN_MENU;
-  return `Prazer, *${msg}*! 😊\n\n` + mainMenuText();
-}
+1. **Identificação** — Chame find_or_create_customer imediatamente.
+   - Cliente já cadastrado: cumprimente pelo nome e siga para o pedido.
+   - Cliente novo: informe que é necessário fazer um cadastro rápido e colete:
+     a) Nome completo
+     b) Endereço completo (rua, número, bairro)
+     Só então chame find_or_create_customer com create_new=true, name e address.
+   ⚠️ NUNCA avance para o pedido sem o cliente estar cadastrado com nome e endereço.
 
-function mainMenuText(): string {
-  return 'O que deseja fazer?\n\n' +
-    '1️⃣ 📋 Fazer pedido\n' +
-    '2️⃣ ❌ Sair\n\n' +
-    '_Digite o número da opção:_';
-}
+2. **Pedido** — Ajude o cliente a escolher os itens. Use add_to_cart para cada item.
 
-async function onMainMenu(msg: string, s: Session): Promise<string> {
-  if (msg === '1') return showCategories(s);
-  if (msg === '2') {
-    s.state = State.IDLE;
-    s.cart = [];
-    return '👋 Até a próxima! Digite *oi* quando quiser pedir.';
-  }
-  return 'Digite *1* para pedir ou *2* para sair.';
-}
+3. **Confirmação** — Antes de finalizar, mostre um resumo completo:
+   - Itens, quantidades e preços
+   - Endereço de entrega (use o endereço cadastrado ou pergunte se mudou)
+   - Forma de pagamento
+   Aguarde o cliente confirmar.
 
-async function showCategories(s: Session): Promise<string> {
-  const products = await loadProducts();
-  const categories = [...new Set(products.map((p: any) => p.category))].sort();
-  s.categories = categories;
-  s.state = State.SELECT_CATEGORY;
+4. **Finalização** — Só após confirmação explícita chame create_order.
 
-  let text = '📋 *CARDÁPIO* — Categorias:\n\n';
-  categories.forEach((cat, i) => {
-    const count = products.filter((p: any) => p.category === cat).length;
-    text += `*${i + 1}.* ${cat} (${count})\n`;
-  });
-  text += '\n_Digite o número da categoria:_';
-  return text;
-}
+**Comportamento:**
+- Responda SEMPRE em português brasileiro
+- Use emojis com moderação
+- Se o cliente quiser cancelar, conclua amigavelmente
+- O número de telefone já está no sistema, não pergunte`;
 
-async function onSelectCategory(msg: string, s: Session): Promise<string> {
-  const idx = parseInt(msg, 10) - 1;
-  if (isNaN(idx) || !s.categories || idx < 0 || idx >= s.categories.length) {
-    return `Opção inválida. Digite um número de 1 a ${s.categories?.length || '?'}.`;
-  }
+    // Adiciona mensagem do usuário ao histórico
+    session.messages.push({ role: 'user', content: body });
 
-  const category = s.categories[idx];
-  s.pendingCategory = category;
-  const products = await loadProducts();
-  const filtered = products
-    .filter((p: any) => p.category === category)
-    .sort((a: any, b: any) => a.name.localeCompare(b.name));
-  s.categoryProducts = filtered;
-  s.state = State.SELECT_PRODUCT;
-
-  let text = `🍕 *${category}*:\n\n`;
-  filtered.forEach((p: any, i: number) => {
-    text += `*${i + 1}.* ${p.name} — ${brl(parseFloat(p.price))}\n`;
-    if (p.description) text += `   _${p.description}_\n`;
-  });
-  text += `\n*0.* ⬅️ Voltar às categorias\n`;
-  text += '\n_Digite o número do produto:_';
-  return text;
-}
-
-async function onSelectProduct(msg: string, s: Session): Promise<string> {
-  if (msg === '0') return showCategories(s);
-
-  const idx = parseInt(msg, 10) - 1;
-  const prods = s.categoryProducts || [];
-  if (isNaN(idx) || idx < 0 || idx >= prods.length) {
-    return `Opção inválida. Digite um número de 1 a ${prods.length} ou *0* para voltar.`;
-  }
-
-  const product = prods[idx];
-  s.pendingProductId = product.id;
-  s.pendingProductName = product.name;
-  s.pendingProductPrice = parseFloat(product.price);
-
-  if (isPizza(s.pendingCategory || '')) {
-    s.state = State.SELECT_SIZE;
-    return `✅ *${product.name}* — ${brl(s.pendingProductPrice)}\n\n` +
-      'Qual o tamanho?\n\n' +
-      '1️⃣ Normal\n' +
-      '2️⃣ Brotinho (35% off)\n\n' +
-      '_Digite 1 ou 2:_';
-  }
-
-  s.pendingSize = 'normal';
-  s.state = State.SELECT_QUANTITY;
-  return `✅ *${product.name}* — ${brl(s.pendingProductPrice)}\n\nQuantas unidades?\n_Digite a quantidade:_`;
-}
-
-function onSelectSize(msg: string, s: Session): string {
-  if (msg === '1') s.pendingSize = 'normal';
-  else if (msg === '2') s.pendingSize = 'brotinho';
-  else return 'Digite *1* para Normal ou *2* para Brotinho.';
-
-  s.state = State.ASK_HALF;
-  return 'Deseja pizza *meio a meio*? 🍕\n\n' +
-    '1️⃣ Não, inteira\n' +
-    '2️⃣ Sim, meio a meio\n\n' +
-    '_Digite 1 ou 2:_';
-}
-
-function onAskHalf(msg: string, s: Session): string {
-  if (msg === '1') {
-    s.state = State.SELECT_QUANTITY;
-    const price = calcUnitPrice(s.pendingProductPrice!, undefined, s.pendingSize!);
-    const label = s.pendingSize === 'brotinho' ? ' (Brotinho)' : '';
-    return `✅ *${s.pendingProductName}*${label} — ${brl(price)}\n\nQuantas unidades?\n_Digite a quantidade:_`;
-  }
-  if (msg === '2') {
-    s.state = State.SELECT_HALF_PRODUCT;
-    const prods = s.categoryProducts || [];
-    let text = '🍕 Escolha o sabor da *outra metade*:\n\n';
-    prods.forEach((p: any, i: number) => {
-      text += `*${i + 1}.* ${p.name} — ${brl(parseFloat(p.price))}\n`;
-    });
-    text += '\n_Digite o número do sabor:_';
-    return text;
-  }
-  return 'Digite *1* para inteira ou *2* para meio a meio.';
-}
-
-async function onSelectHalfProduct(msg: string, s: Session): Promise<string> {
-  const prods = s.categoryProducts || [];
-  const idx = parseInt(msg, 10) - 1;
-  if (isNaN(idx) || idx < 0 || idx >= prods.length) {
-    return `Opção inválida. Digite um número de 1 a ${prods.length}.`;
-  }
-
-  const half = prods[idx];
-  s.pendingHalfId = half.id;
-  s.pendingHalfName = half.name;
-  s.pendingHalfPrice = parseFloat(half.price);
-
-  const price = calcUnitPrice(s.pendingProductPrice!, s.pendingHalfPrice, s.pendingSize!);
-  const label = s.pendingSize === 'brotinho' ? ' (Brotinho)' : '';
-  s.state = State.SELECT_QUANTITY;
-  return `✅ *${s.pendingProductName} / ${s.pendingHalfName}*${label} — ${brl(price)}\n\nQuantas unidades?\n_Digite a quantidade:_`;
-}
-
-function onSelectQuantity(msg: string, s: Session): string {
-  const qty = parseInt(msg, 10);
-  if (isNaN(qty) || qty < 1 || qty > 50) {
-    return 'Digite uma quantidade válida (1 a 50):';
-  }
-
-  const unitPrice = calcUnitPrice(s.pendingProductPrice!, s.pendingHalfPrice, s.pendingSize!);
-
-  s.cart.push({
-    productId: s.pendingProductId!,
-    productName: s.pendingProductName!,
-    quantity: qty,
-    size: s.pendingSize!,
-    halfProductId: s.pendingHalfId,
-    halfProductName: s.pendingHalfName,
-    unitPrice,
-  });
-
-  // clear pending
-  s.pendingProductId = s.pendingProductName = s.pendingCategory = undefined as any;
-  s.pendingProductPrice = s.pendingHalfPrice = undefined;
-  s.pendingSize = undefined;
-  s.pendingHalfId = s.pendingHalfName = undefined;
-
-  const item = s.cart[s.cart.length - 1];
-  let desc = item.productName;
-  if (item.halfProductName) desc += ` / ${item.halfProductName}`;
-  if (item.size === 'brotinho') desc += ' (Brotinho)';
-  const sub = item.unitPrice * item.quantity;
-
-  s.state = State.MORE_ITEMS;
-  return `✅ Adicionado: *${qty}x ${desc}* — ${brl(sub)}\n\n` +
-    'Deseja adicionar mais alguma coisa?\n\n' +
-    '1️⃣ Sim, quero mais\n' +
-    '2️⃣ Não, finalizar pedido\n\n' +
-    '_Digite 1 ou 2:_';
-}
-
-async function onMoreItems(msg: string, s: Session): Promise<string> {
-  if (msg === '1') return showCategories(s);
-  if (msg === '2') {
-    if (s.deliveryAddress) {
-      s.state = State.ASK_ADDRESS;
-      return `📍 Entregar no mesmo endereço?\n*${s.deliveryAddress}*\n\n` +
-        '1️⃣ Sim\n' +
-        '2️⃣ Não, outro endereço\n' +
-        '3️⃣ Vou retirar no local\n\n' +
-        '_Digite a opção:_';
+    // Trunca histórico para controlar custo (mantém as últimas N mensagens)
+    if (session.messages.length > MAX_HISTORY) {
+      session.messages = session.messages.slice(-MAX_HISTORY);
     }
-    s.state = State.ASK_ADDRESS;
-    return '📍 Qual o *endereço de entrega*?\n\nOu digite *retirar* se for buscar no local.';
-  }
-  return 'Digite *1* para adicionar mais ou *2* para finalizar.';
-}
 
-function onAskAddress(msg: string, s: Session): string {
-  // If a saved address exists we showed 1/2/3 options
-  if (s.deliveryAddress && s.deliveryAddress !== '') {
-    if (msg === '1') {
-      /* keep current address */
-    } else if (msg === '3') {
-      s.deliveryAddress = 'RETIRADA NO LOCAL';
-    } else if (msg === '2') {
-      s.deliveryAddress = undefined;
-      return '📍 Digite o novo endereço de entrega:';
-    } else {
-      return 'Digite *1*, *2* ou *3*.';
+    // Loop agêntico
+    while (true) {
+      const response = await anthropic.messages.create({
+        model: 'claude-haiku-4-5',
+        max_tokens: 1024,
+        system: systemPrompt,
+        tools,
+        messages: session.messages,
+      });
+
+      // Salva resposta do assistente no histórico
+      session.messages.push({ role: 'assistant', content: response.content });
+
+      if (response.stop_reason === 'end_turn') {
+        const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text');
+        return textBlock?.text ?? '';
+      }
+
+      if (response.stop_reason === 'tool_use') {
+        const toolResults: Anthropic.ToolResultBlockParam[] = [];
+
+        for (const block of response.content) {
+          if (block.type === 'tool_use') {
+            const result = await executeTool(phone, block.name, block.input, session);
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: result,
+            });
+          }
+        }
+
+        session.messages.push({ role: 'user', content: toolResults });
+        continue;
+      }
+
+      // stop_reason inesperado
+      break;
     }
-  } else {
-    // Free-text mode
-    if (msg.toLowerCase() === 'retirar' || msg.toLowerCase() === 'retirada') {
-      s.deliveryAddress = 'RETIRADA NO LOCAL';
-    } else if (msg.length < 5) {
-      return '📍 Digite um endereço válido ou *retirar* para buscar no local.';
-    } else {
-      s.deliveryAddress = msg;
-    }
+
+    return '❌ Desculpe, algo deu errado. Tente novamente.';
+
+  } catch (err: any) {
+    logger.error(`[Chatbot IA] Erro (${phone}): ${err.message}`);
+    return '❌ Ocorreu um erro. Por favor, tente novamente em instantes.';
   }
-
-  s.state = State.ASK_PAYMENT;
-  return '💳 Forma de pagamento:\n\n' +
-    '1️⃣ Dinheiro\n' +
-    '2️⃣ Cartão (na entrega)\n' +
-    '3️⃣ PIX\n\n' +
-    '_Digite a opção:_';
-}
-
-function onAskPayment(msg: string, s: Session): string {
-  const methods: Record<string, string> = { '1': 'Dinheiro', '2': 'Cartão', '3': 'PIX' };
-  if (!methods[msg]) return 'Digite *1* (Dinheiro), *2* (Cartão) ou *3* (PIX).';
-
-  s.paymentMethod = methods[msg];
-  s.state = State.CONFIRM_ORDER;
-
-  return buildSummary(s) + '\n\n' +
-    '✅ *Confirmar pedido?*\n\n' +
-    '1️⃣ Sim, confirmar\n' +
-    '2️⃣ Não, cancelar\n\n' +
-    '_Digite 1 ou 2:_';
-}
-
-function buildSummary(s: Session): string {
-  const lines: string[] = [];
-  lines.push('─────────────────');
-  lines.push('📋 *RESUMO DO PEDIDO*');
-  lines.push('─────────────────');
-  lines.push('');
-
-  let total = 0;
-  s.cart.forEach((item, i) => {
-    let desc = item.productName;
-    if (item.halfProductName) desc += ` / ${item.halfProductName}`;
-    if (item.size === 'brotinho') desc += ' _(Brotinho)_';
-    const sub = item.unitPrice * item.quantity;
-    total += sub;
-    lines.push(`${i + 1}. ${item.quantity}x ${desc}`);
-    lines.push(`   ${brl(sub)}`);
-  });
-
-  lines.push('');
-  lines.push(`💰 *Total: ${brl(total)}*`);
-  lines.push('');
-  lines.push(`📍 ${s.deliveryAddress}`);
-  lines.push(`💳 ${s.paymentMethod}`);
-  return lines.join('\n');
-}
-
-async function onConfirmOrder(phone: string, msg: string, s: Session): Promise<string> {
-  if (msg === '2') {
-    resetSession(phone);
-    return '❌ Pedido cancelado.\n\nDigite *oi* para um novo pedido!';
-  }
-  if (msg !== '1') return 'Digite *1* para confirmar ou *2* para cancelar.';
-
-  const items: CreateOrderItemDTO[] = s.cart.map(item => ({
-    productId: item.productId,
-    quantity: item.quantity,
-    size: item.size,
-    halfProductId: item.halfProductId,
-  }));
-
-  const dto: CreateOrderDTO = {
-    customerId: s.customerId!,
-    items,
-    paymentMethod: s.paymentMethod,
-    deliveryAddress: s.deliveryAddress !== 'RETIRADA NO LOCAL' ? s.deliveryAddress : undefined,
-    notes: 'Pedido via WhatsApp',
-  };
-
-  const order = await createOrder(dto);
-
-  // Save/update address on customer profile
-  if (s.deliveryAddress && s.deliveryAddress !== 'RETIRADA NO LOCAL' && s.customerId) {
-    await customerRepo.updateCustomer(s.customerId, { address: s.deliveryAddress }).catch(() => {});
-  }
-
-  // Notify the web dashboard
-  broadcast('new-order', {
-    id: order.id,
-    customerName: s.customerName,
-    total: order.total,
-    itemCount: s.cart.reduce((sum, i) => sum + i.quantity, 0),
-  });
-
-  resetSession(phone);
-
-  return `🎉 *Pedido #${order.id} confirmado!*\n\n` +
-    'Seu pedido foi recebido e já está sendo preparado! 👨‍🍳\n\n' +
-    'Você receberá atualizações sobre o status por aqui.\n\n' +
-    '_Obrigado pela preferência! 🍕_';
 }

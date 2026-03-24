@@ -1,12 +1,13 @@
 const sql = require('mssql');
+require('dotenv').config();
 
 const config = {
-  server: 'localhost',
-  port: 1433,
-  user: 'sa',
-  password: 'Larissa7@',
-  database: 'Pizzaria',
-  options: { encrypt: false, trustServerCertificate: true }
+  server: process.env.DB_HOST,
+  port: parseInt(process.env.DB_PORT) || 1433,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+  options: { encrypt: true, trustServerCertificate: false }
 };
 
 const products = [

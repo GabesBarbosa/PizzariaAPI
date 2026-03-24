@@ -31,6 +31,7 @@ let qrCodeData: string | null = null;
 let isReady = false;
 let initializing = false;
 let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+const processedMessages = new Set<string>();
 
 export function initWhatsApp(): void {
   if (initializing) {
@@ -138,6 +139,11 @@ export function initWhatsApp(): void {
     try {
       if (message.fromMe || message.from.endsWith('@g.us') || message.from === 'status@broadcast') return;
       if (!message.body) return;
+
+      const msgId = message.id._serialized;
+      if (processedMessages.has(msgId)) return;
+      processedMessages.add(msgId);
+      setTimeout(() => processedMessages.delete(msgId), 60_000);
 
       const reply = await tenantStorage.run(whatsappTenantContext, () =>
         handleMessage(message.from, message.body)
