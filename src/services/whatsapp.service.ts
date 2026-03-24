@@ -64,7 +64,7 @@ export function initWhatsApp(): void {
     webVersion: '2.2412.54',
     webVersionCache: {
       type: 'local',
-      path: process.env.WWEBJS_CACHE_PATH || '/tmp/wwebjs_cache',
+      path: process.env.WWEBJS_CACHE_PATH || '/app/wwebjs_cache',
     },
     puppeteer: {
       headless: true,
@@ -78,10 +78,10 @@ export function initWhatsApp(): void {
         '--disable-gpu',
         '--no-first-run',
         '--no-zygote',
-        '--single-process',
         '--disable-extensions',
         '--disable-background-networking',
         '--disable-default-apps',
+        '--disable-features=IsolateOrigins,site-per-process',
       ]
     }
   });
