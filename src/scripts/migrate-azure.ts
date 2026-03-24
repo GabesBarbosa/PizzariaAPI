@@ -199,6 +199,21 @@ async function migrateTenant() {
     `);
     console.log('      [OK] OrderItems');
 
+    await pool.request().query(`
+      IF NOT EXISTS (
+        SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'Settings'
+      )
+      CREATE TABLE Settings (
+        [key]     NVARCHAR(100) NOT NULL PRIMARY KEY,
+        value     NVARCHAR(500) NOT NULL,
+        updatedAt DATETIME2     NOT NULL DEFAULT SYSUTCDATETIME()
+      );
+
+      IF NOT EXISTS (SELECT 1 FROM Settings WHERE [key] = 'deliveryFee')
+        INSERT INTO Settings ([key], value) VALUES ('deliveryFee', '5.00');
+    `);
+    console.log('      [OK] Settings');
+
     // Safety: add any missing columns on existing tables (idempotent)
     await pool.request().query(`
       IF COL_LENGTH('Orders', 'paymentMethod')   IS NULL ALTER TABLE Orders ADD paymentMethod   NVARCHAR(50)   NULL;

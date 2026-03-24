@@ -58,7 +58,28 @@ export const updateCustomer = async (id: string, data: UpdateCustomerDTO) => {
 
 export const deleteCustomer = async (id: string) => {
   const conn = await getPool();
-  const request = conn.request();
-  request.input('id', sql.UniqueIdentifier, id);
-  await request.query('DELETE FROM Customers WHERE id = @id');
+  const transaction = new sql.Transaction(conn);
+  try {
+    await transaction.begin();
+
+    // Remove itens dos pedidos do cliente
+    await new sql.Request(transaction)
+      .input('cid', sql.UniqueIdentifier, id)
+      .query('DELETE oi FROM OrderItems oi INNER JOIN Orders o ON oi.orderId = o.id WHERE o.customerId = @cid');
+
+    // Remove pedidos do cliente
+    await new sql.Request(transaction)
+      .input('cid', sql.UniqueIdentifier, id)
+      .query('DELETE FROM Orders WHERE customerId = @cid');
+
+    // Remove o cliente
+    await new sql.Request(transaction)
+      .input('id', sql.UniqueIdentifier, id)
+      .query('DELETE FROM Customers WHERE id = @id');
+
+    await transaction.commit();
+  } catch (err) {
+    try { await transaction.rollback(); } catch { /* ignora */ }
+    throw err;
+  }
 };

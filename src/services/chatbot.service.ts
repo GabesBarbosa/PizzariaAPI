@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as customerRepo from '../repositories/customer.repository';
 import * as productRepo from '../repositories/product.repository';
 import { createOrder } from '../repositories/order.repository';
+import { getDeliveryFee } from '../repositories/settings.repository';
 import { CreateOrderItemDTO } from '../dtos/order.dto';
 import { broadcast } from './notification.service';
 import logger from '../utils/logger';
@@ -250,6 +251,9 @@ async function executeTool(
         if (session.cart.length === 0) return JSON.stringify({ error: 'Carrinho vazio' });
         if (!session.customerId) return JSON.stringify({ error: 'Cliente não identificado' });
 
+        const isPickup = input.delivery_address === 'RETIRADA NO LOCAL';
+        const deliveryFee = isPickup ? 0 : await getDeliveryFee();
+
         const items: CreateOrderItemDTO[] = session.cart.map(item => ({
           productId:     item.productId,
           quantity:      item.quantity,
@@ -261,7 +265,8 @@ async function executeTool(
           customerId:      session.customerId,
           items,
           paymentMethod:   input.payment_method,
-          deliveryAddress: input.delivery_address !== 'RETIRADA NO LOCAL' ? input.delivery_address : undefined,
+          deliveryAddress: !isPickup ? input.delivery_address : undefined,
+          deliveryFee,
           notes:           'Pedido via WhatsApp (IA)',
         });
 
@@ -300,7 +305,8 @@ export async function handleMessage(phone: string, body: string): Promise<string
 
   session.processing = true;
   try {
-    const products = await loadProducts();
+    const [products, deliveryFee] = await Promise.all([loadProducts(), getDeliveryFee()]);
+    const feeText = deliveryFee > 0 ? brl(deliveryFee) : 'grátis';
 
     const systemPrompt = `Você é o atendente virtual da *Pizzatec* 🍕, uma pizzaria delivery. Atenda clientes pelo WhatsApp de forma natural, simpática e eficiente.
 
@@ -310,6 +316,7 @@ ${buildMenuText(products)}
 - Pizzas tamanho "brotinho" = ${Math.round(BROTINHO_MULTIPLIER * 100)}% do preço normal (${Math.round((1 - BROTINHO_MULTIPLIER) * 100)}% de desconto)
 - Pizza meio a meio: preço baseado no sabor mais caro entre os dois
 - Formas de pagamento aceitas: Dinheiro, Cartão (na entrega), PIX
+- Taxa de entrega: ${feeText} (retirada no local = isento)
 
 **FLUXO OBRIGATÓRIO — siga sempre nesta ordem:**
 
