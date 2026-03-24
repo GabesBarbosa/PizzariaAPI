@@ -167,9 +167,26 @@ export function initWhatsApp(): void {
     setTimeout(() => initWhatsApp(), 5000);
   });
 
+  // Resolve o dbName real do PizzariaMaster para garantir que o chatbot
+  // grava no mesmo banco que o frontend lê (via JWT do auth middleware).
+  let resolvedDbName = process.env.DB_NAME || 'Pizzaria';
+  try {
+    const { findTenantBySlug } = await import('../repositories/auth.repository');
+    const slug = process.env.WHATSAPP_TENANT_SLUG || 'larissa';
+    const tenant = await findTenantBySlug(slug);
+    if (tenant?.dbName) {
+      resolvedDbName = tenant.dbName;
+      console.log(`[WhatsApp] tenant dbName resolvido: "${resolvedDbName}"`);
+    } else {
+      console.warn(`[WhatsApp] Tenant slug="${slug}" não encontrado no PizzariaMaster — usando DB_NAME=${resolvedDbName}`);
+    }
+  } catch (e: any) {
+    console.warn(`[WhatsApp] Falha ao resolver tenant dbName: ${e.message} — usando ${resolvedDbName}`);
+  }
+
   const whatsappTenantContext = {
     tenantId: process.env.WHATSAPP_TENANT_ID || 'default',
-    dbName: process.env.DB_NAME || 'Pizzaria',
+    dbName: resolvedDbName,
     userId: 'whatsapp-bot',
   };
 
