@@ -36,6 +36,7 @@ interface Session {
   customerName?: string;
   savedAddress?: string;
   lastActivity: number;
+  processing: boolean; // lock: evita race condition se duas msgs chegam juntas
 }
 
 /* ─── Estado em memória ─── */
@@ -62,11 +63,11 @@ function getSession(phone: string): Session {
     s = undefined;
   }
   if (!s) {
-    s = { messages: [], cart: [], lastActivity: Date.now() };
+    s = { messages: [], cart: [], lastActivity: Date.now(), processing: false };
     sessions.set(phone, s);
   }
   s.lastActivity = Date.now();
-  return s;
+  return s as Session;
 }
 
 async function loadProducts(): Promise<any[]> {
@@ -293,6 +294,11 @@ async function executeTool(
 export async function handleMessage(phone: string, body: string): Promise<string> {
   const session = getSession(phone);
 
+  if (session.processing) {
+    return '⏳ Ainda estou processando sua mensagem anterior. Aguarde um momento e tente novamente.';
+  }
+
+  session.processing = true;
   try {
     const products = await loadProducts();
 
@@ -384,5 +390,7 @@ ${buildMenuText(products)}
   } catch (err: any) {
     logger.error(`[Chatbot IA] Erro (${phone}): ${err.message}`);
     return '❌ Ocorreu um erro. Por favor, tente novamente em instantes.';
+  } finally {
+    session.processing = false;
   }
 }
