@@ -7,6 +7,7 @@ import { execSync } from 'child_process';
 import logger from '../utils/logger';
 import { handleMessage } from './chatbot.service';
 import { tenantStorage } from '../database/tenantContext';
+import { broadcast } from './notification.service';
 
 function removeSingletonLock(dataPath: string): void {
   try {
@@ -79,12 +80,16 @@ export function initWhatsApp(): void {
     }
   });
 
-  client.on('qr', (qr: string) => {
+  client.on('qr', async (qr: string) => {
     console.log('[WhatsApp] QR event disparado, gerando imagem...');
     qrCodeData = qr;
     isReady = false;
     logger.info('QR Code recebido! Escaneie pelo WhatsApp:');
     qrTerminal.generate(qr, { small: true });
+    try {
+      const qrImage = await QRCode.toDataURL(qr, { width: 280, margin: 2 });
+      broadcast('whatsapp-status', { connected: false, qrCode: qrImage });
+    } catch { /* ignora */ }
   });
 
   client.on('ready', () => {
@@ -93,6 +98,7 @@ export function initWhatsApp(): void {
     qrCodeData = null;
     initializing = false;
     logger.info('WhatsApp conectado com sucesso!');
+    broadcast('whatsapp-status', { connected: true, qrCode: null });
   });
 
   client.on('authenticated', () => {
@@ -125,6 +131,7 @@ export function initWhatsApp(): void {
     qrCodeData = null;
     initializing = false;
     logger.warn('WhatsApp desconectado:', reason);
+    broadcast('whatsapp-status', { connected: false, qrCode: null });
     logger.info('[WhatsApp] Reiniciando em 5s após desconexão...');
     setTimeout(() => initWhatsApp(), 5000);
   });
