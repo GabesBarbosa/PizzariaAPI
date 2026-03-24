@@ -3,6 +3,7 @@ import * as customerRepo from '../repositories/customer.repository';
 import * as productRepo from '../repositories/product.repository';
 import { createOrder } from '../repositories/order.repository';
 import { getDeliveryFee, getChatbotMode } from '../repositories/settings.repository';
+import { handleHardcodedMessage } from './chatbot-hardcoded.service';
 import { CreateOrderItemDTO } from '../dtos/order.dto';
 import { broadcast } from './notification.service';
 import logger from '../utils/logger';
@@ -391,6 +392,12 @@ async function executeTool(
 /* ─── Ponto de entrada ─── */
 
 export async function handleMessage(phone: string, body: string): Promise<string> {
+  // Roteamento por modo — verificado antes de criar sessão IA para não misturar estados
+  const chatbotMode = await getChatbotMode();
+  if (chatbotMode === 'triggers') {
+    return handleHardcodedMessage(phone, body);
+  }
+
   const session = getSession(phone);
 
   if (session.processing) {
@@ -399,18 +406,11 @@ export async function handleMessage(phone: string, body: string): Promise<string
 
   session.processing = true;
   try {
-    const [products, deliveryFee, chatbotMode] = await Promise.all([
-      loadProducts(), getDeliveryFee(), getChatbotMode(),
-    ]);
+    const [products, deliveryFee] = await Promise.all([loadProducts(), getDeliveryFee()]);
 
-    // Verifica triggers antes de gastar tokens da IA (funciona em ambos os modos)
+    // Verifica triggers antes de gastar tokens da IA
     const triggerReply = checkTriggers(body, products, session, deliveryFee);
     if (triggerReply) return triggerReply;
-
-    // Modo triggers: não chama a IA, apenas responde padrões conhecidos
-    if (chatbotMode === 'triggers') {
-      return ''; // sem resposta — operador atende manualmente
-    }
 
     const feeText = deliveryFee > 0 ? brl(deliveryFee) : 'grátis';
 
