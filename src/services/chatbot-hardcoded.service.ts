@@ -47,10 +47,11 @@ interface CartPizza {
 
 interface PizzaBuilder {
   size: PizzaSize;
-  maxFlavors: number;      // 1, 2 ou 3 dependendo de tamanho + split
-  flavorStep: 1 | 2;       // qual sabor estamos escolhendo agora
+  maxFlavors: number;
+  flavorStep: 1 | 2;
   product1?: any;
   product2?: any;
+  crust?: string;
   currentCategory?: string;
 }
 
@@ -58,6 +59,7 @@ interface HSession {
   state: State;
   customerId?: string;
   customerName?: string;
+  tempName?: string;
   savedAddress?: string;
   deliveryAddress?: string;
   paymentMethod?: string;
@@ -627,12 +629,6 @@ function buildConfirmation(session: HSession, deliveryFee: number): string {
 
   let msg = '📋 *CONFIRMAÇÃO DO PEDIDO*\n━━━━━━━━━━━━━━━━━━━━\n\n';
   session.cart.forEach((pizza, i) => {
-    let flavors = pizza.product1Name;
-    if (pizza.product2Name && pizza.product3Name) {
-      flavors = `${pizza.product1Name} / ${pizza.product2Name} / ${pizza.product3Name}`;
-    } else if (pizza.product2Name) {
-      flavors = `Meio ${pizza.product1Name} / Meio ${pizza.product2Name}`;
-    }
     const flavorsConf = pizza.product2Name
       ? `Meio ${pizza.product1Name} / Meio ${pizza.product2Name}`
       : pizza.product1Name;
