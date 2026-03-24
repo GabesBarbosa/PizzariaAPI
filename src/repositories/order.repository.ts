@@ -2,7 +2,13 @@ import { getPool, sql } from '../database/mssqlClient';
 import { CreateOrderDTO, CreateOrderItemDTO } from '../dtos/order.dto';
 import { v4 as uuidv4 } from 'uuid';
 
-const BROTINHO_MULTIPLIER = 0.65;
+const SIZE_MULTIPLIERS: Record<string, number> = {
+  brotinho: 0.65,
+  media:    0.80,
+  grande:   1.00,
+  gigante:  1.25,
+  normal:   1.00,
+};
 
 interface ItemWithPrice {
   id: string; productId: string; quantity: number; price: number;
@@ -25,7 +31,8 @@ async function calcItemPrice(transaction: any, it: CreateOrderItemDTO): Promise<
   }
 
   const size = it.size || 'normal';
-  if (size === 'brotinho') price = Math.round(price * BROTINHO_MULTIPLIER * 100) / 100;
+  const multiplier = SIZE_MULTIPLIERS[size] ?? 1.00;
+  if (multiplier !== 1.00) price = Math.round(price * multiplier * 100) / 100;
 
   return {
     price,

@@ -1,7 +1,7 @@
 export interface CreateOrderItemDTO {
   productId: string;
   quantity: number;
-  size?: 'normal' | 'brotinho';
+  size?: 'normal' | 'brotinho' | 'media' | 'grande' | 'gigante';
   halfProductId?: string;
 }
 

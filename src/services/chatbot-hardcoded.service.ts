@@ -1,6 +1,6 @@
 /**
- * Chatbot hardcoded (modo triggers) — máquina de estados sem IA.
- * Fluxo guiado por menus, sem gastar tokens da Anthropic.
+ * Chatbot hardcoded v2 — fluxo guiado: tamanho → sabor(es) → borda → entrega
+ * Sem IA, sem gastar tokens.
  */
 
 import * as customerRepo from '../repositories/customer.repository';
@@ -11,24 +11,47 @@ import { CreateOrderItemDTO } from '../dtos/order.dto';
 import { broadcast } from './notification.service';
 import logger from '../utils/logger';
 
-/* ─── Tipos ─── */
+/* ─── Tipos ─────────────────────────────────────────────────────── */
 
 type State =
   | 'INIT'
+  | 'REPEAT_OFFER'
   | 'AWAIT_NAME'
   | 'AWAIT_ADDRESS'
-  | 'MENU'
+  | 'SELECT_SIZE'
+  | 'SELECT_SPLIT'
+  | 'SELECT_CAT'
+  | 'SELECT_FLAVOR'
+  | 'SELECT_CRUST'
+  | 'AWAIT_NOTES'
+  | 'CART_REVIEW'
   | 'AWAIT_DELIVERY_CHOICE'
   | 'AWAIT_CUSTOM_ADDRESS'
   | 'AWAIT_PAYMENT'
+  | 'AWAIT_TROCO'
   | 'CONFIRMING';
 
-interface CartItem {
-  productId: string;
-  productName: string;
-  quantity: number;
-  size: 'normal' | 'brotinho';
-  unitPrice: number;
+type PizzaSize = 'normal' | 'brotinho';
+
+interface CartPizza {
+  size: PizzaSize;
+  product1Id: string;
+  product1Name: string;
+  product2Id?: string;
+  product2Name?: string;
+  crust?: string;
+  crustPrice: number;
+  pizzaNotes?: string;
+  unitPrice: number;       // preço calculado para exibição (inclui borda)
+}
+
+interface PizzaBuilder {
+  size: PizzaSize;
+  maxFlavors: number;      // 1, 2 ou 3 dependendo de tamanho + split
+  flavorStep: 1 | 2;       // qual sabor estamos escolhendo agora
+  product1?: any;
+  product2?: any;
+  currentCategory?: string;
 }
 
 interface HSession {
@@ -38,24 +61,46 @@ interface HSession {
   savedAddress?: string;
   deliveryAddress?: string;
   paymentMethod?: string;
-  cart: CartItem[];
-  tempName?: string;
+  troco?: number;
+  cart: CartPizza[];
+  builder?: PizzaBuilder;
   lastActivity: number;
 }
 
-/* ─── Constantes ─── */
+/* ─── Constantes ─────────────────────────────────────────────────── */
 
-const SESSION_TIMEOUT_MS  = 30 * 60 * 1000;
-const BROTINHO_MULTIPLIER = 0.65;
-const PRODUCT_CACHE_TTL   = 5 * 60 * 1000;
+const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
+const PRODUCT_CACHE_TTL  =  5 * 60 * 1000;
 
-/* ─── Estado em memória ─── */
+const SIZE_LABELS: Record<PizzaSize, string> = {
+  normal:   'Pizza Normal',
+  brotinho: 'Brotinho',
+};
 
-const sessions = new Map<string, HSession>();
+const SIZE_MAX_FLAVORS: Record<PizzaSize, number> = {
+  normal:   2,
+  brotinho: 1,
+};
+
+const SIZE_MULTIPLIERS: Record<PizzaSize, number> = {
+  normal:   1.00,
+  brotinho: 0.65,
+};
+
+const CRUST_OPTIONS = [
+  { label: 'Catupiry Original', price: 8.00 },
+  { label: 'Cheddar',           price: 8.00 },
+  { label: 'Chocolate',         price: 8.00 },
+];
+
+/* ─── Estado em memória ─────────────────────────────────────────── */
+
+const sessions   = new Map<string, HSession>();
+const lastOrders = new Map<string, CartPizza[]>(); // persiste entre sessões
 let productsCache: any[] | null = null;
 let cacheTime = 0;
 
-/* ─── Helpers ─── */
+/* ─── Helpers ───────────────────────────────────────────────────── */
 
 function brl(v: number) {
   return v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -89,69 +134,77 @@ async function loadProducts(): Promise<any[]> {
   return productsCache!;
 }
 
-/** Monta o cardápio numerado com instruções claras */
-function buildMenuMsg(products: any[], deliveryFee: number): string {
-  const categories = [...new Set(products.map((p: any) => p.category))].sort() as string[];
-  let num = 1;
-  let msg = '🍕 *CARDÁPIO PIZZATEC*\n';
-  msg += '━━━━━━━━━━━━━━━━━━━━━\n\n';
-  for (const cat of categories) {
-    msg += `*${cat.toUpperCase()}*\n`;
-    for (const p of products.filter((x: any) => x.category === cat)) {
-      const price    = parseFloat(p.price);
-      const brotinho = Math.round(price * BROTINHO_MULTIPLIER * 100) / 100;
-      msg += `*${num}.* ${p.name}`;
-      if (p.description) msg += ` — _${p.description}_`;
-      msg += `\n     Normal: ${brl(price)}`;
-      msg += `  |  Brotinho (${num}b): ${brl(brotinho)}\n`;
-      num++;
-    }
-    msg += '\n';
-  }
-  msg += '━━━━━━━━━━━━━━━━━━━━━\n';
-  msg += `🚚 Taxa de entrega: *${deliveryFee > 0 ? brl(deliveryFee) : 'grátis'}*\n\n`;
-  msg += '*Como pedir:*\n';
-  msg += '• *1* → 1x item 1 (normal)\n';
-  msg += '• *1 2* → 2x item 1 (normal)\n';
-  msg += '• *1b* → 1x item 1 brotinho\n\n';
-  msg += '📋 *carrinho* — ver itens adicionados\n';
-  msg += '✅ *finalizar* — fechar pedido\n';
-  msg += '❌ *cancelar* — recomeçar\n';
+function getCategories(products: any[]): string[] {
+  return [...new Set(products.map((p: any) => p.category as string))].sort();
+}
+
+function calcPizzaPrice(size: PizzaSize, p1Price: number, p2Price = 0, crustPrice = 0): number {
+  const base = Math.max(p1Price, p2Price);
+  return Math.round((base * SIZE_MULTIPLIERS[size] + crustPrice) * 100) / 100;
+}
+
+/* ─── Mensagens ─────────────────────────────────────────────────── */
+
+function msgSizeMenu(): string {
+  return (
+    '🍕 *Qual o tamanho?*\n\n' +
+    '*1.* Normal — até 2 sabores\n' +
+    '*2.* Brotinho (individual) — 1 sabor'
+  );
+}
+
+function msgCategoryMenu(products: any[], step: number): string {
+  const label = step === 1 ? '1º Sabor' : step === 2 ? '2º Sabor' : '3º Sabor';
+  const cats  = getCategories(products);
+  let msg = `🍕 *Categoria do ${label}:*\n\n`;
+  cats.forEach((cat, i) => { msg += `*${i + 1}.* ${cat}\n`; });
   return msg;
 }
 
-/** Monta índice: "1" → {product, size:'normal'}, "1b" → {product, size:'brotinho'} */
-function buildProductIndex(products: any[]): Map<string, { product: any; size: 'normal' | 'brotinho' }> {
-  const map = new Map<string, { product: any; size: 'normal' | 'brotinho' }>();
-  products.forEach((p, idx) => {
-    const n = String(idx + 1);
-    map.set(n,       { product: p, size: 'normal'   });
-    map.set(n + 'b', { product: p, size: 'brotinho'  });
+function msgFlavorMenu(products: any[], category: string, step: number): string {
+  const label = step === 1 ? '1º Sabor' : step === 2 ? '2º Sabor' : '3º Sabor';
+  const items = products.filter((p: any) => p.category === category);
+  let msg = `🍕 *${label} — ${category}:*\n\n`;
+  items.forEach((p, i) => {
+    msg += `*${i + 1}.* ${p.name}`;
+    if (p.description) msg += ` — _${p.description}_`;
+    msg += '\n';
   });
-  return map;
+  msg += '\n_Digite o número ou *voltar* para trocar a categoria._';
+  return msg;
 }
 
-/** Exibe o carrinho atual */
-function buildCartMsg(cart: CartItem[], deliveryFee: number, isPickup: boolean): string {
-  if (cart.length === 0) return '🛒 Seu carrinho está vazio.';
-  let msg = '🛒 *SEU CARRINHO*\n━━━━━━━━━━━━━━\n\n';
-  let subtotal = 0;
-  cart.forEach((item, i) => {
-    const total = item.unitPrice * item.quantity;
-    subtotal += total;
-    const sizeLabel = item.size === 'brotinho' ? ' (brotinho)' : '';
-    msg += `${i + 1}. ${item.quantity}x ${item.productName}${sizeLabel} — ${brl(total)}\n`;
+function msgCrustMenu(): string {
+  let msg = '🧀 *Deseja borda recheada?*\n\n';
+  CRUST_OPTIONS.forEach((c, i) => { msg += `*${i + 1}.* ${c.label} — ${brl(c.price)}\n`; });
+  msg += `*${CRUST_OPTIONS.length + 1}.* Sem borda`;
+  return msg;
+}
+
+function msgCartSummary(cart: CartPizza[], deliveryFee: number, isPickup: boolean): string {
+  let msg   = '📋 *SEU PEDIDO ATÉ AGORA*\n━━━━━━━━━━━━━━━━━━━━\n\n';
+  let total = 0;
+  cart.forEach((pizza, i) => {
+    total += pizza.unitPrice;
+    const flavors = pizza.product2Name
+      ? `Meio ${pizza.product1Name} / Meio ${pizza.product2Name}`
+      : pizza.product1Name;
+    msg += `*${i + 1}.* ${SIZE_LABELS[pizza.size]}\n`;
+    msg += `   🍕 ${flavors}\n`;
+    if (pizza.crust)      msg += `   🧀 Borda: ${pizza.crust}\n`;
+    if (pizza.pizzaNotes) msg += `   📝 ${pizza.pizzaNotes}\n`;
+    msg += `   💰 ${brl(pizza.unitPrice)}\n\n`;
   });
   const fee = isPickup ? 0 : deliveryFee;
-  msg += '\n';
   if (fee > 0) msg += `🚚 Entrega: ${brl(fee)}\n`;
-  msg += `*TOTAL: ${brl(subtotal + fee)}*\n\n`;
-  msg += '➕ Continue adicionando ou *finalizar* para confirmar.\n';
-  msg += '🗑️ *remover* para tirar o último item.';
+  msg += `*TOTAL: ${brl(total + fee)}*\n\n`;
+  msg += '━━━━━━━━━━━━━━━━━━━━\n';
+  msg += '*1.* Adicionar outra pizza\n';
+  msg += '*2.* Finalizar pedido';
   return msg;
 }
 
-/* ─── Ponto de entrada ─── */
+/* ─── Ponto de entrada ──────────────────────────────────────────── */
 
 export async function handleHardcodedMessage(phone: string, body: string): Promise<string> {
   const session    = getSession(phone);
@@ -161,28 +214,67 @@ export async function handleHardcodedMessage(phone: string, body: string): Promi
   /* ── Comandos globais ── */
   if (/^(cancelar|sair|recomeçar|recomecar|cancel)$/.test(text)) {
     sessions.delete(phone);
-    return '❌ Pedido cancelado. Quando quiser, é só mandar uma mensagem! 😊';
+    return '❌ Pedido cancelado. Quando quiser, é só chamar! 😊';
+  }
+  if (/^(ajuda|help|\?)$/.test(text)) {
+    return (
+      '🆘 *Comandos:*\n\n' +
+      '• *cancelar* — reiniciar\n' +
+      '• *carrinho* — ver pedido atual\n' +
+      '• *voltar* — passo anterior'
+    );
+  }
+  if (/^(carrinho|ver carrinho)$/.test(text) && session.cart.length > 0) {
+    const [, deliveryFee] = await Promise.all([loadProducts(), getDeliveryFee()]);
+    return msgCartSummary(session.cart, deliveryFee, false);
   }
 
   const [products, deliveryFee] = await Promise.all([loadProducts(), getDeliveryFee()]);
 
   switch (session.state) {
 
-    /* ── INIT: identificar cliente ─────────────────────────── */
+    /* ── INIT ──────────────────────────────────────────────────── */
     case 'INIT': {
       const found = await customerRepo.findCustomersByNameOrPhone(cleanPhone);
       if (found.length > 0) {
         session.customerId   = found[0].id;
         session.customerName = found[0].name;
         session.savedAddress = found[0].address || undefined;
-        session.state        = 'MENU';
-        return `Olá, *${found[0].name}*! 👋 Que bom ter você aqui!\n\n` + buildMenuMsg(products, deliveryFee);
+
+        const last = lastOrders.get(cleanPhone);
+        if (last && last.length > 0) {
+          const flavorDesc = last[0].product2Name
+            ? `Meio ${last[0].product1Name} / Meio ${last[0].product2Name}`
+            : last[0].product1Name;
+          session.state = 'REPEAT_OFFER';
+          return (
+            `Olá, *${found[0].name}*! 👋 Saudades de você! 🍕\n\n` +
+            `🔄 *Repetir seu último pedido?*\n` +
+            `_${SIZE_LABELS[last[0].size]} — ${flavorDesc}_\n\n` +
+            '*1.* Sim, quero o mesmo!\n' +
+            '*2.* Quero fazer um novo pedido'
+          );
+        }
+        session.state = 'SELECT_SIZE';
+        return `Olá, *${found[0].name}*! 👋 Que bom ter você de volta! 🍕\n\n` + msgSizeMenu();
       }
       session.state = 'AWAIT_NAME';
-      return 'Olá! 👋 Seja bem-vindo(a) à *Pizzatec* 🍕\n\nPara começar, *qual é o seu nome?*';
+      return 'Olá! 👋 Seja bem-vindo(a) à *Pizzatec* 🍕\n\nQual é o seu nome?';
     }
 
-    /* ── AWAIT_NAME ──────────────────────────────────────────── */
+    /* ── REPEAT_OFFER ──────────────────────────────────────────── */
+    case 'REPEAT_OFFER': {
+      if (text === '1') {
+        const last = lastOrders.get(cleanPhone)!;
+        session.cart  = last.map(p => ({ ...p }));
+        session.state = 'CART_REVIEW';
+        return msgCartSummary(session.cart, deliveryFee, false);
+      }
+      session.state = 'SELECT_SIZE';
+      return msgSizeMenu();
+    }
+
+    /* ── AWAIT_NAME ────────────────────────────────────────────── */
     case 'AWAIT_NAME': {
       if (body.trim().length < 2) return '⚠️ Por favor, informe seu nome.';
       session.tempName = body.trim();
@@ -190,7 +282,7 @@ export async function handleHardcodedMessage(phone: string, body: string): Promi
       return `Prazer, *${session.tempName}*! 😊\n\n*Qual é o seu endereço de entrega?*\n_(Rua, número e bairro)_`;
     }
 
-    /* ── AWAIT_ADDRESS ───────────────────────────────────────── */
+    /* ── AWAIT_ADDRESS ─────────────────────────────────────────── */
     case 'AWAIT_ADDRESS': {
       if (body.trim().length < 5) return '⚠️ Por favor, informe o endereço completo (rua, número e bairro).';
       try {
@@ -202,93 +294,187 @@ export async function handleHardcodedMessage(phone: string, body: string): Promi
         session.customerId   = customer.id;
         session.customerName = session.tempName!;
         session.savedAddress = body.trim();
-        session.state        = 'MENU';
+        session.state        = 'SELECT_SIZE';
         logger.info(`[Chatbot] Cliente CRIADO: id=${customer.id}, nome=${session.customerName}`);
-        return `✅ *Cadastro realizado!* Agora veja nosso cardápio:\n\n` + buildMenuMsg(products, deliveryFee);
+        return `✅ *Cadastro realizado, ${session.customerName}!* Vamos montar seu pedido:\n\n` + msgSizeMenu();
       } catch (err: any) {
         logger.error(`[Chatbot Hardcoded] Erro ao criar cliente: ${err.message}`);
         return '❌ Erro ao salvar cadastro. Tente novamente.';
       }
     }
 
-    /* ── MENU: receber itens ─────────────────────────────────── */
-    case 'MENU': {
-      // Cardápio
-      if (/^(card[áa]pio|menu|ver card[áa]pio|\?)$/.test(text)) {
-        return buildMenuMsg(products, deliveryFee);
+    /* ── SELECT_SIZE ───────────────────────────────────────────── */
+    case 'SELECT_SIZE': {
+      const sizeMap: Record<string, PizzaSize> = {
+        '1': 'normal', '2': 'brotinho',
+      };
+      const size = sizeMap[text];
+      if (!size) return '⚠️ Escolha o tamanho:\n\n' + msgSizeMenu();
+
+      session.builder = { size, maxFlavors: 1, flavorStep: 1 };
+
+      if (size === 'brotinho') {
+        // Brotinho: sempre 1 sabor, vai direto para categoria
+        session.state = 'SELECT_CAT';
+        return msgCategoryMenu(products, 1);
       }
-      // Carrinho
-      if (/^(carrinho|ver carrinho|meu carrinho)$/.test(text)) {
-        return buildCartMsg(session.cart, deliveryFee, false);
+
+      session.state = 'SELECT_SPLIT';
+      return (
+        `*Pizza Normal* selecionada! 👍\n\n` +
+        `🍕 Como será?\n\n` +
+        `*1.* Sabor único\n` +
+        `*2.* Meio a meio (2 sabores)`
+      );
+    }
+
+    /* ── SELECT_SPLIT ──────────────────────────────────────────── */
+    case 'SELECT_SPLIT': {
+      const b   = session.builder!;
+      const max = SIZE_MAX_FLAVORS[b.size];
+
+      if (text === '1') {
+        b.maxFlavors = 1;
+      } else if (text === '2') {
+        b.maxFlavors = 2;
+      } else {
+        return '⚠️ Escolha *1* (sabor único) ou *2* (meio a meio).';
       }
-      // Remover último item
-      if (/^remover$/.test(text)) {
-        if (session.cart.length === 0) return '🛒 Seu carrinho já está vazio.';
-        const removed = session.cart.pop()!;
-        return `🗑️ *${removed.productName}* removido.\n\n` + buildCartMsg(session.cart, deliveryFee, false);
+
+      session.state = 'SELECT_CAT';
+      return msgCategoryMenu(products, 1);
+    }
+
+    /* ── SELECT_CAT ────────────────────────────────────────────── */
+    case 'SELECT_CAT': {
+      const b    = session.builder!;
+      const cats = getCategories(products);
+      const idx  = parseInt(text, 10) - 1;
+      if (isNaN(idx) || idx < 0 || idx >= cats.length) {
+        return '⚠️ Categoria inválida.\n\n' + msgCategoryMenu(products, b.flavorStep);
       }
-      // Finalizar
-      if (/^(finalizar|confirmar|fechar|pronto)$/.test(text)) {
-        if (session.cart.length === 0) return '🛒 Seu carrinho está vazio. Adicione itens antes de finalizar.';
+      b.currentCategory = cats[idx];
+      session.state     = 'SELECT_FLAVOR';
+      return msgFlavorMenu(products, b.currentCategory, b.flavorStep);
+    }
+
+    /* ── SELECT_FLAVOR ─────────────────────────────────────────── */
+    case 'SELECT_FLAVOR': {
+      const b = session.builder!;
+
+      if (text === 'voltar') {
+        session.state = 'SELECT_CAT';
+        return msgCategoryMenu(products, b.flavorStep);
+      }
+
+      const items = products.filter((p: any) => p.category === b.currentCategory);
+      const idx   = parseInt(text, 10) - 1;
+      if (isNaN(idx) || idx < 0 || idx >= items.length) {
+        return '⚠️ Opção inválida.\n\n' + msgFlavorMenu(products, b.currentCategory!, b.flavorStep);
+      }
+
+      const chosen = items[idx];
+
+      if (b.flavorStep === 1) b.product1 = chosen;
+      else                    b.product2 = chosen;
+
+      const confirmMsg = `✅ *${chosen.name}* escolhido!\n\n`;
+
+      // Próximo sabor?
+      if (b.flavorStep < b.maxFlavors) {
+        b.flavorStep = (b.flavorStep + 1) as 1 | 2;
+        session.state = 'SELECT_CAT';
+        return confirmMsg + msgCategoryMenu(products, b.flavorStep);
+      }
+
+      // Todos os sabores escolhidos → borda
+      session.state = 'SELECT_CRUST';
+      return confirmMsg + msgCrustMenu();
+    }
+
+    /* ── SELECT_CRUST ──────────────────────────────────────────── */
+    case 'SELECT_CRUST': {
+      const b      = session.builder!;
+      const noIdx  = CRUST_OPTIONS.length + 1;
+      const choice = parseInt(text, 10);
+
+      let crust: string | undefined;
+      let crustPrice = 0;
+
+      if (choice >= 1 && choice <= CRUST_OPTIONS.length) {
+        crust      = CRUST_OPTIONS[choice - 1].label;
+        crustPrice = CRUST_OPTIONS[choice - 1].price;
+      } else if (choice === noIdx) {
+        // sem borda
+      } else {
+        return '⚠️ Opção inválida.\n\n' + msgCrustMenu();
+      }
+
+      b.crust = crust;
+      session.state = 'AWAIT_NOTES';
+      return (
+        (crust ? `✅ *Borda ${crust}* adicionada!\n\n` : '') +
+        '📝 Alguma observação? (ex: sem cebola, bem passada...)\n\n' +
+        '_Digite a observação ou *pular* para continuar._'
+      );
+    }
+
+    /* ── AWAIT_NOTES ───────────────────────────────────────────── */
+    case 'AWAIT_NOTES': {
+      const b          = session.builder!;
+      const pizzaNotes = /^(pular|nao|não|nada|ok|-)$/i.test(text) ? undefined : body.trim();
+
+      const p1Price    = parseFloat(b.product1!.price);
+      const p2Price    = b.product2 ? parseFloat(b.product2.price) : 0;
+      const crustOpt   = b.crust ? CRUST_OPTIONS.find(c => c.label === b.crust) : undefined;
+      const crustPrice = crustOpt?.price ?? 0;
+      const unitPrice  = calcPizzaPrice(b.size, p1Price, p2Price, crustPrice);
+
+      const pizza: CartPizza = {
+        size:         b.size,
+        product1Id:   b.product1!.id,
+        product1Name: b.product1!.name,
+        product2Id:   b.product2?.id,
+        product2Name: b.product2?.name,
+        crust:        b.crust,
+        crustPrice,
+        pizzaNotes,
+        unitPrice,
+      };
+
+      session.cart.push(pizza);
+      session.builder  = undefined;
+      session.state    = 'CART_REVIEW';
+      return msgCartSummary(session.cart, deliveryFee, false);
+    }
+
+    /* ── CART_REVIEW ───────────────────────────────────────────── */
+    case 'CART_REVIEW': {
+      if (text === '1') {
+        // Adicionar mais uma pizza
+        session.builder = undefined;
+        session.state   = 'SELECT_SIZE';
+        return msgSizeMenu();
+      }
+      if (text === '2') {
+        // Finalizar
         session.state = 'AWAIT_DELIVERY_CHOICE';
-        let msg = buildCartMsg(session.cart, deliveryFee, false);
-        msg += '\n\n📍 *Endereço de entrega:*\n';
+        let msg = '📍 *Forma de entrega:*\n\n';
         if (session.savedAddress) {
           msg += `*1.* Entregar em: _${session.savedAddress}_\n`;
         }
-        msg += `*${session.savedAddress ? '2' : '1'}.* Retirar no local (sem taxa de entrega)\n`;
+        msg += `*${session.savedAddress ? '2' : '1'}.* Retirar no local (sem taxa)\n`;
         msg += `*${session.savedAddress ? '3' : '2'}.* Outro endereço`;
         return msg;
       }
-
-      // Parsear "N" ou "Nb" ou "N Q" ou "Nb Q"
-      const match = text.match(/^(\d+b?)\s*(\d+)?$/);
-      if (match) {
-        const key = match[1];
-        const qty = parseInt(match[2] || '1', 10);
-        if (isNaN(qty) || qty < 1 || qty > 20) return '⚠️ Quantidade inválida (máx. 20).';
-
-        const index = buildProductIndex(products);
-        const entry = index.get(key);
-        if (!entry) return `⚠️ Item *${key}* não encontrado. Digite *cardápio* para ver as opções.`;
-
-        const price     = parseFloat(entry.product.price);
-        const unitPrice = entry.size === 'brotinho'
-          ? Math.round(price * BROTINHO_MULTIPLIER * 100) / 100
-          : price;
-
-        // Agrupa se já existe o mesmo item no carrinho
-        const existing = session.cart.find(
-          c => c.productId === entry.product.id && c.size === entry.size
-        );
-        if (existing) {
-          existing.quantity += qty;
-        } else {
-          session.cart.push({
-            productId:   entry.product.id,
-            productName: entry.product.name,
-            quantity:    qty,
-            size:        entry.size,
-            unitPrice,
-          });
-        }
-
-        const sizeLabel   = entry.size === 'brotinho' ? ' (brotinho)' : '';
-        const cartSubtotal = session.cart.reduce((s, i) => s + i.unitPrice * i.quantity, 0);
-        return `✅ *${qty}x ${entry.product.name}${sizeLabel}* adicionado!\n` +
-          `Subtotal do carrinho: *${brl(cartSubtotal)}*\n\n` +
-          'Continue adicionando, *carrinho* para ver tudo ou *finalizar* para confirmar.';
-      }
-
-      // Qualquer outra mensagem → reapresenta cardápio
-      return buildMenuMsg(products, deliveryFee);
+      return '⚠️ Digite *1* para adicionar outra pizza ou *2* para finalizar.';
     }
 
-    /* ── AWAIT_DELIVERY_CHOICE ───────────────────────────────── */
+    /* ── AWAIT_DELIVERY_CHOICE ─────────────────────────────────── */
     case 'AWAIT_DELIVERY_CHOICE': {
-      const hasSaved    = !!session.savedAddress;
-      const optPickup   = hasSaved ? '2' : '1';
-      const optOther    = hasSaved ? '3' : '2';
+      const hasSaved  = !!session.savedAddress;
+      const optPickup = hasSaved ? '2' : '1';
+      const optOther  = hasSaved ? '3' : '2';
 
       if (text === '1' && hasSaved) {
         session.deliveryAddress = session.savedAddress;
@@ -298,79 +484,101 @@ export async function handleHardcodedMessage(phone: string, body: string): Promi
         session.state = 'AWAIT_CUSTOM_ADDRESS';
         return '📍 Digite seu endereço de entrega (rua, número e bairro):';
       } else {
-        const opts = hasSaved
-          ? '*1* (cadastrado) · *2* (retirar) · *3* (outro)'
-          : '*1* (retirar) · *2* (outro endereço)';
-        return `⚠️ Opção inválida. Escolha: ${opts}`;
+        const opts = hasSaved ? '*1*, *2* ou *3*' : '*1* ou *2*';
+        return `⚠️ Escolha ${opts}.`;
       }
-
       return goToPayment(session, deliveryFee);
     }
 
-    /* ── AWAIT_CUSTOM_ADDRESS ────────────────────────────────── */
+    /* ── AWAIT_CUSTOM_ADDRESS ──────────────────────────────────── */
     case 'AWAIT_CUSTOM_ADDRESS': {
       if (body.trim().length < 5) return '⚠️ Por favor, informe o endereço completo (rua, número e bairro).';
       session.deliveryAddress = body.trim();
       return goToPayment(session, deliveryFee);
     }
 
-    /* ── AWAIT_PAYMENT ───────────────────────────────────────── */
+    /* ── AWAIT_PAYMENT ─────────────────────────────────────────── */
     case 'AWAIT_PAYMENT': {
-      const paymentMap: Record<string, string> = { '1': 'CASH', '2': 'CARD', '3': 'PIX' };
-      const payment = paymentMap[text];
-      if (!payment) return '⚠️ Escolha: *1* (Dinheiro) · *2* (Cartão na entrega) · *3* (PIX)';
+      const payMap: Record<string, string> = { '1': 'PIX', '2': 'CREDIT', '3': 'CASH' };
+      const payment = payMap[text];
+      if (!payment) return '⚠️ Escolha: *1* (PIX) · *2* (Cartão na entrega) · *3* (Dinheiro)';
+
       session.paymentMethod = payment;
-      session.state         = 'CONFIRMING';
 
-      const paymentLabels: Record<string, string> = { CASH: 'Dinheiro', CARD: 'Cartão na entrega', PIX: 'PIX' };
-      const isPickup  = session.deliveryAddress === 'RETIRADA NO LOCAL';
-      const fee       = isPickup ? 0 : deliveryFee;
-      const subtotal  = session.cart.reduce((s, i) => s + i.unitPrice * i.quantity, 0);
+      if (payment === 'CASH') {
+        session.state = 'AWAIT_TROCO';
+        return '💵 Precisa de troco? Se sim, para quanto? (ex: *50*)  Se não, digite *não*.';
+      }
 
-      let msg = '📋 *RESUMO DO PEDIDO*\n━━━━━━━━━━━━━━━━━━\n\n';
-      session.cart.forEach(item => {
-        const sl = item.size === 'brotinho' ? ' (brotinho)' : '';
-        msg += `${item.quantity}x ${item.productName}${sl} — ${brl(item.unitPrice * item.quantity)}\n`;
-      });
-      msg += '\n';
-      if (fee > 0) msg += `🚚 Entrega: ${brl(fee)}\n`;
-      msg += `💰 *TOTAL: ${brl(subtotal + fee)}*\n`;
-      msg += `📍 ${isPickup ? 'Retirada no local' : session.deliveryAddress}\n`;
-      msg += `💳 ${paymentLabels[payment]}\n\n`;
-      msg += 'Confirmar? *sim* para confirmar · *não* para cancelar';
-      return msg;
+      session.state = 'CONFIRMING';
+      return buildConfirmation(session, deliveryFee);
     }
 
-    /* ── CONFIRMING ──────────────────────────────────────────── */
+    /* ── AWAIT_TROCO ───────────────────────────────────────────── */
+    case 'AWAIT_TROCO': {
+      if (!/^(n[ãa]o|nao|no|-)$/i.test(text)) {
+        const val = parseFloat(text.replace(',', '.'));
+        if (!isNaN(val) && val > 0) session.troco = val;
+      }
+      session.state = 'CONFIRMING';
+      return buildConfirmation(session, deliveryFee);
+    }
+
+    /* ── CONFIRMING ────────────────────────────────────────────── */
     case 'CONFIRMING': {
       if (/^(sim|s|yes|confirmar|confirmo)$/.test(text)) {
         try {
-          const isPickup = session.deliveryAddress === 'RETIRADA NO LOCAL';
-          const fee      = isPickup ? 0 : deliveryFee;
-          const items: CreateOrderItemDTO[] = session.cart.map(i => ({
-            productId: i.productId,
-            quantity:  i.quantity,
-            size:      i.size,
+          const isPickup     = session.deliveryAddress === 'RETIRADA NO LOCAL';
+          const fee          = isPickup ? 0 : deliveryFee;
+          const totalCrust   = session.cart.reduce((s, p) => s + p.crustPrice, 0);
+          const totalFee     = fee + totalCrust; // borda somada à taxa
+
+          const items: CreateOrderItemDTO[] = session.cart.map(pizza => ({
+            productId:     pizza.product1Id,
+            quantity:      1,
+            size:          pizza.size,
+            halfProductId: pizza.product2Id,
           }));
+
+          const noteParts: string[] = [];
+          session.cart.forEach((pizza, i) => {
+            if (pizza.pizzaNotes) noteParts.push(`Pizza ${i + 1} — obs: ${pizza.pizzaNotes}`);
+            if (pizza.crust)      noteParts.push(`Pizza ${i + 1} — borda: ${pizza.crust}`);
+          });
+          if (session.troco) noteParts.push(`Troco para: ${brl(session.troco)}`);
+          const notes = noteParts.join(' | ') || 'Pedido via WhatsApp';
+
+          const paymentLabels: Record<string, string> = {
+            PIX: 'PIX', CREDIT: 'Cartão', CASH: 'Dinheiro'
+          };
+
           const order = await createOrder({
             customerId:      session.customerId!,
             items,
-            paymentMethod:   session.paymentMethod,
+            paymentMethod:   paymentLabels[session.paymentMethod!] || session.paymentMethod,
             deliveryAddress: !isPickup ? session.deliveryAddress : undefined,
-            deliveryFee:     fee,
-            notes:           'Pedido via WhatsApp',
+            deliveryFee:     totalFee,
+            notes,
             channel:         'whatsapp',
           });
-          logger.info(`[Chatbot Hardcoded] Pedido CRIADO: id=${order.id}, total=${order.total}`);
+
+          logger.info(`[Chatbot] Pedido CRIADO: id=${order.id}, total=${order.total}`);
           broadcast('new-order', {
             id:           order.id,
             customerName: session.customerName,
             total:        order.total,
-            itemCount:    session.cart.reduce((s, i) => s + i.quantity, 0),
+            itemCount:    session.cart.length,
             channel:      'whatsapp',
           });
+
+          // Salva para "repetir último pedido"
+          lastOrders.set(cleanPhone, session.cart.map(p => ({ ...p })));
           sessions.delete(phone);
-          return `✅ *Pedido #${order.id} confirmado!*\n\n🍕 Já estamos preparando sua pizza!\nObrigado, *${session.customerName}*! 😊❤️`;
+
+          return (
+            `✅ *Pedido #${order.id} confirmado!*\n\n` +
+            `🍕 Já estamos preparando! Obrigado, *${session.customerName}*! 😊❤️`
+          );
         } catch (err: any) {
           logger.error(`[Chatbot Hardcoded] Erro ao criar pedido: ${err.message}`);
           return '❌ Erro ao registrar o pedido. Tente novamente ou ligue para nós.';
@@ -378,7 +586,7 @@ export async function handleHardcodedMessage(phone: string, body: string): Promi
       }
       if (/^(n[ãa]o|nao|no|cancelar)$/.test(text)) {
         sessions.delete(phone);
-        return '❌ Pedido cancelado. Quando quiser fazer um novo, é só chamar! 😊';
+        return '❌ Pedido cancelado. Quando quiser, é só chamar! 😊';
       }
       return 'Digite *sim* para confirmar ou *não* para cancelar.';
     }
@@ -389,14 +597,56 @@ export async function handleHardcodedMessage(phone: string, body: string): Promi
   }
 }
 
-/* ─── Helper interno ─── */
+/* ─── Helpers internos ──────────────────────────────────────────── */
 
 function goToPayment(session: HSession, deliveryFee: number): string {
-  session.state = 'AWAIT_PAYMENT';
-  const isPickup = session.deliveryAddress === 'RETIRADA NO LOCAL';
-  const fee      = isPickup ? 0 : deliveryFee;
-  const subtotal = session.cart.reduce((s, i) => s + i.unitPrice * i.quantity, 0);
-  return buildCartMsg(session.cart, deliveryFee, isPickup) +
-    `\n\n*Total: ${brl(subtotal + fee)}*\n\n` +
-    '💳 *Forma de pagamento:*\n*1.* Dinheiro\n*2.* Cartão na entrega\n*3.* PIX';
+  session.state     = 'AWAIT_PAYMENT';
+  const isPickup    = session.deliveryAddress === 'RETIRADA NO LOCAL';
+  const fee         = isPickup ? 0 : deliveryFee;
+  const totalCrust  = session.cart.reduce((s, p) => s + p.crustPrice, 0);
+  const subtotal    = session.cart.reduce((s, p) => s + p.unitPrice, 0);
+  // unitPrice já inclui borda, então subtraímos para evitar dupla contagem no display
+  const displayFee  = fee; // borda já está em unitPrice de cada pizza
+  const grandTotal  = subtotal + displayFee;
+
+  return (
+    `📍 ${isPickup ? 'Retirada no local' : session.deliveryAddress}\n` +
+    (fee > 0 ? `🚚 Entrega: ${brl(fee)}\n` : '') +
+    `💰 *Total: ${brl(grandTotal)}*\n\n` +
+    '💳 *Forma de pagamento:*\n*1.* PIX\n*2.* Cartão (levar maquininha)\n*3.* Dinheiro'
+  );
+}
+
+const PAYMENT_LABELS: Record<string, string> = { PIX: 'PIX', CREDIT: 'Cartão na entrega', CASH: 'Dinheiro' };
+
+function buildConfirmation(session: HSession, deliveryFee: number): string {
+  const isPickup   = session.deliveryAddress === 'RETIRADA NO LOCAL';
+  const fee        = isPickup ? 0 : deliveryFee;
+  const subtotal   = session.cart.reduce((s, p) => s + p.unitPrice, 0);
+  const grandTotal = subtotal + fee;
+
+  let msg = '📋 *CONFIRMAÇÃO DO PEDIDO*\n━━━━━━━━━━━━━━━━━━━━\n\n';
+  session.cart.forEach((pizza, i) => {
+    let flavors = pizza.product1Name;
+    if (pizza.product2Name && pizza.product3Name) {
+      flavors = `${pizza.product1Name} / ${pizza.product2Name} / ${pizza.product3Name}`;
+    } else if (pizza.product2Name) {
+      flavors = `Meio ${pizza.product1Name} / Meio ${pizza.product2Name}`;
+    }
+    const flavorsConf = pizza.product2Name
+      ? `Meio ${pizza.product1Name} / Meio ${pizza.product2Name}`
+      : pizza.product1Name;
+    msg += `*${i + 1}.* ${SIZE_LABELS[pizza.size]} — ${flavorsConf}`;
+    if (pizza.crust)      msg += ` | Borda ${pizza.crust}`;
+    if (pizza.pizzaNotes) msg += ` | _${pizza.pizzaNotes}_`;
+    msg += `  ${brl(pizza.unitPrice)}\n`;
+  });
+  msg += '\n';
+  if (fee > 0) msg += `🚚 Entrega: ${brl(fee)}\n`;
+  msg += `💰 *TOTAL: ${brl(grandTotal)}*\n`;
+  msg += `📍 ${isPickup ? 'Retirada no local' : session.deliveryAddress}\n`;
+  msg += `💳 ${PAYMENT_LABELS[session.paymentMethod!] || session.paymentMethod}`;
+  if (session.troco) msg += `\n💵 Troco para: ${brl(session.troco)}`;
+  msg += '\n\nConfirmar? *sim* · *não*';
+  return msg;
 }
