@@ -243,19 +243,27 @@ export function restartWhatsApp(): void {
   setTimeout(() => initWhatsApp(), 1000);
 }
 
-function formatPhone(phone: string): string {
+function buildPhoneWithCountry(phone: string): string {
+  // Todos os números são brasileiros — adiciona 55 se não tiver
   const digits = phone.replace(/\D/g, '');
-  const number = digits.startsWith('55') && digits.length >= 12 ? digits : `55${digits}`;
-  return `${number}@c.us`;
+  return digits.startsWith('55') ? digits : `55${digits}`;
 }
 
 export const sendTextMessage = async (to: string, text: string) => {
   if (!isReady || !client) {
     throw new Error('WhatsApp não está conectado. Escaneie o QR Code primeiro.');
   }
-  const chatId = formatPhone(to);
-  const result = await client.sendMessage(chatId, text);
-  return { id: result.id._serialized, to: chatId, status: 'sent' };
+
+  const phone = buildPhoneWithCountry(to);
+
+  // getNumberId resolve o chat ID correto (incluindo contas LID do novo sistema WhatsApp)
+  const numberId = await (client as any).getNumberId(phone);
+  if (!numberId) {
+    throw new Error(`Número ${to} não está registrado no WhatsApp.`);
+  }
+
+  const result = await client.sendMessage(numberId._serialized, text);
+  return { id: result.id._serialized, to: numberId._serialized, status: 'sent' };
 };
 
 export const sendBulkMessages = async (

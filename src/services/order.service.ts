@@ -54,13 +54,24 @@ async function notifyCustomerStatusChange(orderId: number, status: string): Prom
   };
 
   const msg = statusMessages[status];
-  if (!msg) return; // Only notify for these 3 statuses
+  if (!msg) {
+    logger.info(`[WhatsApp] Status "${status}" não tem mensagem configurada — sem notificação.`);
+    return;
+  }
 
   const order = await orderRepo.findOrderById(orderId);
-  if (!order?.customerId) return;
+  if (!order?.customerId) {
+    logger.warn(`[WhatsApp] Pedido #${orderId} sem customerId — sem notificação.`);
+    return;
+  }
 
   const customer = await customerRepo.findCustomerById(order.customerId);
-  if (!customer?.phone) return;
+  if (!customer?.phone) {
+    logger.warn(`[WhatsApp] Cliente do pedido #${orderId} sem telefone cadastrado — sem notificação.`);
+    return;
+  }
+
+  logger.info(`[WhatsApp] Notificando pedido #${orderId} status="${status}" → ${customer.phone}`);
 
   const orderShortId = String(orderId);
   let text = `🍕 *Pizzatec*\n\nPedido *#${orderShortId}*\n\n${msg}`;
@@ -73,6 +84,7 @@ async function notifyCustomerStatusChange(orderId: number, status: string): Prom
   }
 
   await sendTextMessage(customer.phone, text);
+  logger.info(`[WhatsApp] Notificação enviada: pedido #${orderId} → ${customer.phone}`);
 }
 
 function formatBrl(value: number): string {
