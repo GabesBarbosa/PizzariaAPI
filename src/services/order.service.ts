@@ -18,6 +18,7 @@ export const createOrder = async (data: CreateOrderDTO) => {
       customerName: customer.name,
       total: order.total,
       itemCount: order.items ? order.items.reduce((s: number, it: any) => s + it.quantity, 0) : 0,
+      channel: data.channel || 'web',
     });
   } catch (err) {
     logger.warn('[Notification] failed to broadcast new-order: ' + (err as Error).message);

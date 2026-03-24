@@ -68,9 +68,9 @@ export type ChatbotMode = 'ai' | 'triggers';
 export const getChatbotMode = async (): Promise<ChatbotMode> => {
   try {
     const v = await getSetting('chatbotMode');
-    return (v === 'triggers' ? 'triggers' : 'ai') as ChatbotMode;
+    return (v === 'ai' ? 'ai' : 'triggers') as ChatbotMode;
   } catch {
-    return 'ai';
+    return 'triggers';
   }
 };
 
