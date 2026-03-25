@@ -17,7 +17,7 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
 const BROTINHO_MULTIPLIER = 0.65;
 const PRODUCT_CACHE_TTL = 5 * 60 * 1000;
-const MAX_HISTORY = 20; // mensagens máximas no histórico (controle de custo)
+const MAX_HISTORY = 12;
 
 /* ─── Tipos ─── */
 
@@ -96,6 +96,25 @@ function buildMenuText(products: any[]): string {
     menu += '\n';
   }
   return menu;
+}
+
+/* ─── Helpers de histórico ──────────────────────────────────────────────── */
+
+function compressOldToolCalls(messages: Anthropic.MessageParam[], keepLast = 4): Anthropic.MessageParam[] {
+  if (messages.length <= keepLast) return messages;
+  const recent = messages.slice(-keepLast);
+  const old    = messages.slice(0, -keepLast);
+  const compressed = old.filter(m => {
+    if (Array.isArray(m.content)) {
+      return !m.content.some((c: any) => c.type === 'tool_use' || c.type === 'tool_result');
+    }
+    return true;
+  });
+  return [...compressed, ...recent];
+}
+
+function needsMenu(msg: string): boolean {
+  return /card[áa]pio|menu|\bpizza|\bopç[oõ]es\b|quero|pedido|pre[çc]o|sabor|tem\s+(a[íi]|disponível)/i.test(msg);
 }
 
 /* ─── Triggers (respostas diretas sem gastar tokens de IA) ─────────────────
@@ -373,6 +392,7 @@ async function executeTool(
           customerName: session.customerName,
           total: order.total,
           itemCount: session.cart.reduce((s, i) => s + i.quantity, 0),
+          channel: 'whatsapp',
         });
 
         session.cart = [];
@@ -414,9 +434,7 @@ export async function handleMessage(phone: string, body: string): Promise<string
 
     const feeText = deliveryFee > 0 ? brl(deliveryFee) : 'grátis';
 
-    const systemPrompt = `Você é o atendente virtual da *Pizzatec* 🍕, uma pizzaria delivery. Atenda clientes pelo WhatsApp de forma natural, simpática e eficiente.
-
-${buildMenuText(products)}
+    const basePrompt = `Você é o atendente virtual da *Pizzatec* 🍕, uma pizzaria delivery. Atenda clientes pelo WhatsApp de forma natural, simpática e eficiente.
 
 **Regras de negócio:**
 - Pizzas tamanho "brotinho" = ${Math.round(BROTINHO_MULTIPLIER * 100)}% do preço normal (${Math.round((1 - BROTINHO_MULTIPLIER) * 100)}% de desconto)
@@ -451,10 +469,17 @@ ${buildMenuText(products)}
 - Se o cliente quiser cancelar, conclua amigavelmente
 - O número de telefone já está no sistema, não pergunte`;
 
+    const menuBlock = needsMenu(body) ? '\n\n' + buildMenuText(products) : '';
+
+    const systemBlocks: Anthropic.TextBlockParam[] = [
+      { type: 'text', text: basePrompt + menuBlock, cache_control: { type: 'ephemeral' } },
+    ];
+
     // Adiciona mensagem do usuário ao histórico
     session.messages.push({ role: 'user', content: body });
 
-    // Trunca histórico para controlar custo (mantém as últimas N mensagens)
+    // Trunca e comprime histórico para controlar custo
+    session.messages = compressOldToolCalls(session.messages);
     if (session.messages.length > MAX_HISTORY) {
       session.messages = session.messages.slice(-MAX_HISTORY);
     }
@@ -464,10 +489,12 @@ ${buildMenuText(products)}
       const response = await anthropic.messages.create({
         model: 'claude-haiku-4-5',
         max_tokens: 1024,
-        system: systemPrompt,
+        system: systemBlocks,
         tools,
         messages: session.messages,
-      });
+        // @ts-ignore — beta header para prompt caching
+        headers: { 'anthropic-beta': 'prompt-caching-2024-07-31' },
+      } as any);
 
       // Salva resposta do assistente no histórico
       session.messages.push({ role: 'assistant', content: response.content });
