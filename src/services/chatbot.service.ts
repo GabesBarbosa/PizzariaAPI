@@ -486,15 +486,18 @@ export async function handleMessage(phone: string, body: string): Promise<string
 
     // Loop agêntico
     while (true) {
-      const response = await anthropic.messages.create({
-        model: 'claude-haiku-4-5',
-        max_tokens: 1024,
-        system: systemBlocks,
-        tools,
-        messages: session.messages,
-        // @ts-ignore — beta header para prompt caching
-        headers: { 'anthropic-beta': 'prompt-caching-2024-07-31' },
-      } as any);
+      const response = await anthropic.messages.create(
+        {
+          model: 'claude-haiku-4-5',
+          max_tokens: 1024,
+          system: systemBlocks,
+          tools,
+          messages: session.messages,
+        },
+        {
+          headers: { 'anthropic-beta': 'prompt-caching-2024-07-31' },
+        },
+      );
 
       // Salva resposta do assistente no histórico
       session.messages.push({ role: 'assistant', content: response.content });
