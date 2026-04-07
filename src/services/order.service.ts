@@ -16,6 +16,7 @@ export const createOrder = async (data: CreateOrderDTO) => {
       customerName: customer.name,
       total: order.total,
       itemCount: order.items ? order.items.reduce((s: number, it: any) => s + it.quantity, 0) : 0,
+      channel: data.channel || 'web',
     });
   } catch (err) {
     logger.warn('[Notification] failed to broadcast new-order: ' + (err as Error).message);
@@ -54,7 +55,10 @@ async function notifyCustomerStatusChange(orderId: number, status: string): Prom
   if (!msg) return;
 
   const order = await orderRepo.findOrderById(orderId);
-  if (!order?.customerId) return;
+  if (!order?.customerId) {
+    logger.warn(`[WhatsApp] Pedido #${orderId} sem customerId — sem notificação.`);
+    return;
+  }
 
   const customer = await customerRepo.findCustomerById(order.customerId);
   if (!customer?.phone) return;
@@ -66,6 +70,7 @@ async function notifyCustomerStatusChange(orderId: number, status: string): Prom
   }
 
   await sendTextMessage(customer.phone, text);
+  logger.info(`[WhatsApp] Notificação enviada: pedido #${orderId} → ${customer.phone}`);
 }
 
 function formatBrl(value: number): string {

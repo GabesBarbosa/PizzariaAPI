@@ -8,6 +8,7 @@ import dashboardRoutes from './routes/dashboard.routes';
 import whatsappRoutes from './routes/whatsapp.routes';
 import healthRoutes from './routes/health.routes';
 import notificationRoutes from './routes/notification.routes';
+import settingsRoutes from './routes/settings.routes';
 import errorHandler from './middlewares/errorHandler';
 import { authMiddleware } from './middlewares/auth.middleware';
 
@@ -33,6 +34,7 @@ app.use('/api/products', authMiddleware, productRoutes);
 app.use('/api/dashboard', authMiddleware, dashboardRoutes);
 app.use('/api/whatsapp', authMiddleware, whatsappRoutes);
 app.use('/api/notifications', authMiddleware, notificationRoutes);
+app.use('/api/settings',     authMiddleware, settingsRoutes);
 
 app.use(errorHandler);
 

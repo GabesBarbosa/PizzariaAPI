@@ -1,0 +1,57 @@
+name: Build image and deploy to Azure Web App (Container)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/pizzaria-api:latest
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Configure Web App to use the new image and set app settings
+        uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            az webapp config container set \
+              --name "${{ secrets.AZURE_WEBAPP_NAME }}" \
+              --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+              --docker-custom-image-name "${{ secrets.DOCKERHUB_USERNAME }}/pizzaria-api:latest"
+
+            # Ensure app settings for whatsapp session path and puppeteer executable
+            az webapp config appsettings set \
+              --name "${{ secrets.AZURE_WEBAPP_NAME }}" \
+              --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+              --settings \
+                WWEBJS_DATA_PATH=/home/site/wwwroot/.wwebjs_auth \
+                PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
+                WEBSITES_ENABLE_APP_SERVICE_STORAGE=true
+
+            az webapp restart --name "${{ secrets.AZURE_WEBAPP_NAME }}" --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}"

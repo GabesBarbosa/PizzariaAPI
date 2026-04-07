@@ -2,6 +2,11 @@ import { Request, Response, NextFunction } from 'express';
 import * as whatsappService from '../services/whatsapp.service';
 import { getAllCustomers } from '../repositories/customer.repository';
 
+export const restartWhatsApp = (_req: Request, res: Response) => {
+  whatsappService.restartWhatsApp();
+  res.json({ message: 'WhatsApp reiniciando... aguarde o novo QR Code.' });
+};
+
 export const getStatus = async (_req: Request, res: Response) => {
   const status = await whatsappService.getStatus();
   res.json(status);
