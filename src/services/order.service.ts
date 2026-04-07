@@ -6,12 +6,10 @@ import logger from '../utils/logger';
 import { broadcast } from './notification.service';
 
 export const createOrder = async (data: CreateOrderDTO) => {
-  // ensure customer exists
   const customer = await customerRepo.findCustomerById(data.customerId);
   if (!customer) throw new Error('Cliente não encontrado');
   const order = await orderRepo.createOrder(data);
 
-  // Broadcast new-order to SSE clients so UI updates in real-time
   try {
     broadcast('new-order', {
       id: order.id,
@@ -38,7 +36,6 @@ export const setOrderStatus = async (orderId: number, status: string) => {
   const updated = await orderRepo.updateOrderStatus(orderId, status);
   if (!updated) return updated;
 
-  // Send WhatsApp notification (fire-and-forget)
   notifyCustomerStatusChange(orderId, status).catch((err) => {
     logger.warn(`[WhatsApp] Falha ao notificar pedido ${orderId}: ${err.message}`);
   });
@@ -50,11 +47,11 @@ async function notifyCustomerStatusChange(orderId: number, status: string): Prom
   const statusMessages: Record<string, string> = {
     PREPARING: '👨‍🍳 Seu pedido está sendo *preparado*! Em breve estará pronto.',
     OUT_FOR_DELIVERY: '🛵 Seu pedido *saiu para entrega*! Fique atento!',
-    DELIVERED: '✅ Seu pedido foi *entregue*! Obrigado pela preferência! 🍕',
+    DELIVERED: '✅ Seu pedido foi *entregue*! Obrigado pela preferência!',
   };
 
   const msg = statusMessages[status];
-  if (!msg) return; // Only notify for these 3 statuses
+  if (!msg) return;
 
   const order = await orderRepo.findOrderById(orderId);
   if (!order?.customerId) return;
@@ -62,14 +59,10 @@ async function notifyCustomerStatusChange(orderId: number, status: string): Prom
   const customer = await customerRepo.findCustomerById(order.customerId);
   if (!customer?.phone) return;
 
-  const orderShortId = String(orderId);
-  let text = `🍕 *Pizzatec*\n\nPedido *#${orderShortId}*\n\n${msg}`;
+  let text = `🍽️ *Pedido #${orderId}*\n\n${msg}`;
 
-  // For DELIVERED, append the receipt with loyalty card
   if (status === 'DELIVERED') {
-    const customerOrders = await orderRepo.findOrdersByCustomer(order.customerId);
-    const orderCount = customerOrders.length;
-    text += '\n\n' + buildReceiptText(order, customer.name, orderCount);
+    text += '\n\n' + buildReceiptText(order, customer.name);
   }
 
   await sendTextMessage(customer.phone, text);
@@ -79,7 +72,7 @@ function formatBrl(value: number): string {
   return value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
-function buildReceiptText(order: any, customerName: string, orderCount: number): string {
+function buildReceiptText(order: any, customerName: string): string {
   const lines: string[] = [];
   lines.push('─────────────────');
   lines.push('📋 *NOTA DO PEDIDO*');
@@ -89,31 +82,29 @@ function buildReceiptText(order: any, customerName: string, orderCount: number):
   const date = order.createdAt ? new Date(order.createdAt).toLocaleString('pt-BR') : '';
   if (date) lines.push(`📅 ${date}`);
   lines.push(`👤 ${customerName}`);
-
-  if (order.deliveryAddress) {
-    lines.push(`📍 ${order.deliveryAddress}`);
-  }
+  if (order.deliveryAddress) lines.push(`📍 ${order.deliveryAddress}`);
   if (order.paymentMethod) {
     const paymentLabels: Record<string, string> = {
       CASH: 'Dinheiro', CREDIT: 'Crédito', DEBIT: 'Débito', PIX: 'PIX'
     };
     lines.push(`💳 ${paymentLabels[order.paymentMethod] || order.paymentMethod}`);
   }
-  if (order.notes) {
-    lines.push(`📝 ${order.notes}`);
-  }
+  if (order.notes) lines.push(`📝 ${order.notes}`);
 
   lines.push('');
   lines.push('─────────────────');
 
-  // Items
   if (order.items?.length) {
     for (const item of order.items) {
       const name = item.productName || 'Produto';
       const qty = item.quantity;
-      const price = parseFloat(item.price) || 0;
-      const lineTotal = qty * price;
-      lines.push(`${qty}x ${name}  ${formatBrl(lineTotal)}`);
+      const price = parseFloat(item.finalPrice) || 0;
+      lines.push(`${qty}x ${name}  ${formatBrl(qty * price)}`);
+      if (item.variations?.length) {
+        for (const v of item.variations) {
+          lines.push(`   + ${v.variationName}`);
+        }
+      }
     }
   }
 
@@ -125,27 +116,7 @@ function buildReceiptText(order: any, customerName: string, orderCount: number):
   lines.push(`*TOTAL: ${formatBrl(parseFloat(order.total))}*`);
   lines.push('─────────────────');
   lines.push('');
-
-  // Loyalty card
-  const stampsCount = orderCount % 10;
-  const isFull = stampsCount === 0 && orderCount > 0;
-  const filled = isFull ? 10 : stampsCount;
-
-  lines.push('🏆 *Cartão Fidelidade*');
-  let stamps = '';
-  for (let i = 0; i < 10; i++) {
-    stamps += i < filled ? '🍕' : '⚪';
-  }
-  lines.push(stamps);
-
-  if (isFull) {
-    lines.push('🎉 *PARABÉNS! GANHOU 1 PIZZA GRÁTIS!* 🎉');
-  } else {
-    lines.push(`${filled}/10 pedidos — Faltam ${10 - filled}!`);
-  }
-
-  lines.push('');
-  lines.push('Obrigado pela preferência! 🍕❤️');
+  lines.push('Obrigado pela preferência! ❤️');
 
   return lines.join('\n');
 }
