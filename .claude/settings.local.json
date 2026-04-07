@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(git checkout:*)",
-      "Bash(node -e \"const pkg = require\\(''./node_modules/mssql/package.json''\\); const ted = require\\(''./node_modules/tedious/package.json''\\); console.log\\(''mssql:'', pkg.version, ''| tedious:'', ted.version\\)\")"
+      "Bash(node -e \"const pkg = require\\(''./node_modules/mssql/package.json''\\); const ted = require\\(''./node_modules/tedious/package.json''\\); console.log\\(''mssql:'', pkg.version, ''| tedious:'', ted.version\\)\")",
+      "Bash(npm run:*)"
     ]
   }
 }

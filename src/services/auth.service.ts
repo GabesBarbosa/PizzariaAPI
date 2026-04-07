@@ -34,14 +34,29 @@ export const login = async (data: LoginDTO) => {
   };
 };
 
-export const register = async (data: RegisterDTO) => {
-  const existing = await authRepo.findBusinessBySlug(data.businessSlug);
-  if (existing) throw Object.assign(new Error('Slug do estabelecimento já está em uso'), { status: 409 });
+const generateSlug = async (name: string): Promise<string> => {
+  const base = name
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .substring(0, 80);
 
+  let slug = base;
+  let attempt = 0;
+  while (await authRepo.findBusinessBySlug(slug)) {
+    attempt++;
+    slug = `${base}-${attempt}`;
+  }
+  return slug;
+};
+
+export const register = async (data: RegisterDTO) => {
   const existingUser = await authRepo.findUserByEmail(data.email);
   if (existingUser) throw Object.assign(new Error('E-mail já cadastrado'), { status: 409 });
 
-  const business = await authRepo.createBusiness(data.businessName, data.businessSlug);
+  const businessSlug = await generateSlug(data.businessName);
+  const business = await authRepo.createBusiness(data.businessName, businessSlug);
 
   const passwordHash = await bcrypt.hash(data.password, 10);
   const user = await authRepo.createUser(business.id, data.name, data.email, passwordHash);
@@ -60,7 +75,7 @@ export const register = async (data: RegisterDTO) => {
       email: user.email,
       role: user.role,
       businessName: data.businessName,
-      businessSlug: data.businessSlug
+      businessSlug: businessSlug
     }
   };
 };
