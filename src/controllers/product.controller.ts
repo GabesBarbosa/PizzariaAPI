@@ -48,3 +48,40 @@ export const deleteProduct = async (req: Request, res: Response, next: NextFunct
     next(err);
   }
 };
+
+export const listVariations = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const variations = await productService.listVariations(req.params.id);
+    res.json(variations);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const createVariation = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const created = await productService.createVariation(req.params.id, req.body);
+    res.status(201).json(created);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const updateVariation = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const updated = await productService.updateVariation(req.params.vid, req.body);
+    if (!updated) return res.status(404).json({ message: 'Variação não encontrada' });
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const deleteVariation = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    await productService.deleteVariation(req.params.vid);
+    res.status(204).send();
+  } catch (err) {
+    next(err);
+  }
+};

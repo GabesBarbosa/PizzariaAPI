@@ -21,3 +21,19 @@ export const updateProduct = async (id: string, data: UpdateProductDTO) => {
 export const deleteProduct = async (id: string) => {
   return productRepo.deleteProduct(id);
 };
+
+export const listVariations = async (productId: string) => {
+  return productRepo.getVariationsByProduct(productId);
+};
+
+export const createVariation = async (productId: string, data: import('../dtos/product.dto').CreateVariationDTO) => {
+  return productRepo.createVariation(productId, data);
+};
+
+export const updateVariation = async (variationId: string, data: import('../dtos/product.dto').UpdateVariationDTO) => {
+  return productRepo.updateVariation(variationId, data);
+};
+
+export const deleteVariation = async (variationId: string) => {
+  return productRepo.deleteVariation(variationId);
+};
