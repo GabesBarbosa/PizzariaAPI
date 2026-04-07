@@ -38,7 +38,7 @@ CREATE TABLE Users (
 IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'Customers')
 CREATE TABLE Customers (
   id         UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
-  businessId UNIQUEIDENTIFIER NOT NULL,
+  businessId UNIQUEIDENTIFIER NOT NULL REFERENCES Businesses(id),
   name       NVARCHAR(200) NOT NULL,
   phone      NVARCHAR(50) NOT NULL,
   address    NVARCHAR(500) NULL,
@@ -52,7 +52,7 @@ CREATE TABLE Customers (
 IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'Products')
 CREATE TABLE Products (
   id          UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
-  businessId  UNIQUEIDENTIFIER NOT NULL,
+  businessId  UNIQUEIDENTIFIER NOT NULL REFERENCES Businesses(id),
   name        NVARCHAR(200) NOT NULL,
   description NVARCHAR(1000) NULL,
   price       DECIMAL(10,2) NOT NULL,
@@ -67,7 +67,7 @@ IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'Produ
 CREATE TABLE ProductVariations (
   id            UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
   productId     UNIQUEIDENTIFIER NOT NULL REFERENCES Products(id),
-  businessId    UNIQUEIDENTIFIER NOT NULL,
+  businessId    UNIQUEIDENTIFIER NOT NULL REFERENCES Businesses(id),
   name          NVARCHAR(100) NOT NULL,
   type          NVARCHAR(50) NOT NULL DEFAULT 'custom',
   priceModifier DECIMAL(10,2) NOT NULL DEFAULT 0,
@@ -80,7 +80,7 @@ CREATE TABLE ProductVariations (
 IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'Orders')
 CREATE TABLE Orders (
   id              INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
-  businessId      UNIQUEIDENTIFIER NOT NULL,
+  businessId      UNIQUEIDENTIFIER NOT NULL REFERENCES Businesses(id),
   customerId      UNIQUEIDENTIFIER NOT NULL REFERENCES Customers(id),
   total           DECIMAL(12,2) NOT NULL,
   status          NVARCHAR(50) NOT NULL DEFAULT 'RECEIVED',
@@ -120,6 +120,9 @@ CREATE TABLE OrderItemVariations (
 -- ========================
 -- INDEXES
 -- ========================
+IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Users_BusinessId')
+  CREATE INDEX IX_Users_BusinessId ON Users(businessId);
+
 IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_Customers_BusinessId')
   CREATE INDEX IX_Customers_BusinessId ON Customers(businessId);
 
