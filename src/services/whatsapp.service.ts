@@ -7,13 +7,30 @@ import { execSync } from 'child_process';
 import logger from '../utils/logger';
 import { handleMessage } from './chatbot.service';
 import { businessStorage } from '../database/businessContext';
+import { broadcast } from './notification.service';
 
-let client: Client;
+let client: Client | null = null;
 let qrCodeData: string | null = null;
 let isReady = false;
 let initializing = false;
 let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
 const processedMessages = new Set<string>();
+
+function removeSingletonLock(dataPath: string): void {
+  const lockPaths = [
+    path.join(dataPath, 'session-default', 'SingletonLock'),
+    path.join(dataPath, 'session-default', 'SingletonCookie'),
+    path.join(dataPath, 'session-default', 'SingletonSocket'),
+  ];
+  for (const lockPath of lockPaths) {
+    try {
+      if (fs.existsSync(lockPath)) {
+        fs.unlinkSync(lockPath);
+        console.log(`[WhatsApp] Lock removido: ${lockPath}`);
+      }
+    } catch { /* ignora */ }
+  }
+}
 
 export async function initWhatsApp(): Promise<void> {
   if (initializing) {
@@ -31,39 +48,48 @@ export async function initWhatsApp(): Promise<void> {
     client = null;
   }
 
-  // Matar processos Chromium stale que possam ter sobrado
-  try { execSync('pkill -f chromium || true', { stdio: 'ignore' }); } catch { /* ignora */ }
+  // Matar processos Chromium stale (apenas Linux)
+  if (process.platform !== 'win32') {
+    try { execSync('pkill -f chromium || true', { stdio: 'ignore' }); } catch { /* ignora */ }
+  }
 
+  const isWindows = process.platform === 'win32';
   const execPath = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
   const dataPath = process.env.WWEBJS_DATA_PATH || '.wwebjs_auth';
   console.log(`[WhatsApp] dataPath: ${dataPath}`);
   console.log(`[WhatsApp] executablePath: ${execPath || '(bundled)'}`);
   console.log(`[WhatsApp] platform: ${process.platform}`);
 
+  const baseArgs = [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-accelerated-2d-canvas',
+    '--disable-gpu',
+    '--no-first-run',
+    '--disable-extensions',
+    '--disable-background-networking',
+    '--disable-default-apps',
+    '--disable-features=IsolateOrigins,site-per-process',
+  ];
+
+  // --single-process é necessário em containers Linux (Azure) mas quebra no Windows
+  if (!isWindows) {
+    baseArgs.push('--single-process');
+  }
+
   client = new Client({
     authStrategy: new LocalAuth({ dataPath }),
     webVersion: '2.2412.54',
     webVersionCache: {
       type: 'local',
-      path: process.env.WWEBJS_CACHE_PATH || '/app/wwebjs_cache',
+      path: process.env.WWEBJS_CACHE_PATH || (isWindows ? '.wwebjs_cache' : '/app/wwebjs_cache'),
     },
     puppeteer: {
       headless: true,
       executablePath: execPath,
       timeout: 60000,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--disable-gpu',
-        '--no-first-run',
-        '--single-process',          // necessário em containers Azure (evita fork de renderer)
-        '--disable-extensions',
-        '--disable-background-networking',
-        '--disable-default-apps',
-        '--disable-features=IsolateOrigins,site-per-process',
-      ]
+      args: baseArgs,
     }
   });
 
@@ -122,23 +148,6 @@ export async function initWhatsApp(): Promise<void> {
     logger.info('[WhatsApp] Reiniciando em 5s após desconexão...');
     setTimeout(() => initWhatsApp(), 5000);
   });
-
-  // Resolve o dbName real do PizzariaMaster para garantir que o chatbot
-  // grava no mesmo banco que o frontend lê (via JWT do auth middleware).
-  let resolvedDbName = process.env.DB_NAME || 'Pizzaria';
-  try {
-    const { findTenantBySlug } = await import('../repositories/auth.repository');
-    const slug = process.env.WHATSAPP_TENANT_SLUG || 'larissa';
-    const tenant = await findTenantBySlug(slug);
-    if (tenant?.dbName) {
-      resolvedDbName = tenant.dbName;
-      console.log(`[WhatsApp] tenant dbName resolvido: "${resolvedDbName}"`);
-    } else {
-      console.warn(`[WhatsApp] Tenant slug="${slug}" não encontrado no PizzariaMaster — usando DB_NAME=${resolvedDbName}`);
-    }
-  } catch (e: any) {
-    console.warn(`[WhatsApp] Falha ao resolver tenant dbName: ${e.message} — usando ${resolvedDbName}`);
-  }
 
   const whatsappBusinessContext = {
     businessId: process.env.WHATSAPP_BUSINESS_ID || '',
