@@ -3,7 +3,7 @@ import qrTerminal from 'qrcode-terminal';
 import QRCode from 'qrcode';
 import logger from '../utils/logger';
 import { handleMessage } from './chatbot.service';
-import { tenantStorage } from '../database/tenantContext';
+import { businessStorage } from '../database/businessContext';
 
 let client: Client;
 let qrCodeData: string | null = null;
@@ -52,10 +52,10 @@ export function initWhatsApp(): void {
     logger.warn('WhatsApp desconectado:', reason);
   });
 
-  const whatsappTenantContext = {
-    tenantId: process.env.WHATSAPP_TENANT_ID || 'default',
-    dbName: process.env.DB_NAME || 'Pizzaria',
+  const whatsappBusinessContext = {
+    businessId: process.env.WHATSAPP_BUSINESS_ID || '',
     userId: 'whatsapp-bot',
+    role: 'bot',
   };
 
   client.on('message', async (message: Message) => {
@@ -63,7 +63,7 @@ export function initWhatsApp(): void {
       if (message.fromMe || message.from.endsWith('@g.us') || message.from === 'status@broadcast') return;
       if (!message.body) return;
 
-      const reply = await tenantStorage.run(whatsappTenantContext, () =>
+      const reply = await businessStorage.run(whatsappBusinessContext, () =>
         handleMessage(message.from, message.body)
       );
       if (reply) await client.sendMessage(message.from, reply);

@@ -1,8 +1,5 @@
 /**
- * Script to seed the PizzariaMaster database with the Larissa tenant.
- *
- * This registers the existing 'Pizzaria' database as Larissa's tenant
- * and creates an admin user.
+ * Script to seed the RestaurantHub database with the initial business.
  *
  * Usage: node -r ts-node/register src/scripts/seed-master.ts
  *   or:  npx ts-node src/scripts/seed-master.ts
@@ -26,27 +23,26 @@ async function run() {
   const pool = new sql.ConnectionPool(config);
   await pool.connect();
 
-  // 1. Create PizzariaMaster if not exists
-  console.log('Creating PizzariaMaster database...');
+  // 1. Create RestaurantHub if not exists
+  console.log('Creating RestaurantHub database...');
   await pool.request().query(`
-    IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = 'PizzariaMaster')
-    CREATE DATABASE PizzariaMaster
+    IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = 'RestaurantHub')
+    CREATE DATABASE RestaurantHub
   `);
   await pool.close();
 
-  // 2. Connect to PizzariaMaster and create tables + seed
-  const masterConfig: sql.config = { ...config, database: 'PizzariaMaster' };
-  const masterPool = new sql.ConnectionPool(masterConfig);
-  await masterPool.connect();
+  // 2. Connect to RestaurantHub and create tables + seed
+  const hubConfig: sql.config = { ...config, database: 'RestaurantHub' };
+  const hubPool = new sql.ConnectionPool(hubConfig);
+  await hubPool.connect();
 
   console.log('Creating tables...');
-  await masterPool.request().query(`
-    IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'Tenants')
-    CREATE TABLE Tenants (
+  await hubPool.request().query(`
+    IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'Businesses')
+    CREATE TABLE Businesses (
       id UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
       name NVARCHAR(200) NOT NULL,
       slug NVARCHAR(100) NOT NULL UNIQUE,
-      dbName NVARCHAR(128) NOT NULL UNIQUE,
       active BIT NOT NULL DEFAULT 1,
       createdAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
     );
@@ -54,64 +50,64 @@ async function run() {
     IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'Users')
     CREATE TABLE Users (
       id UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
-      tenantId UNIQUEIDENTIFIER NOT NULL,
+      businessId UNIQUEIDENTIFIER NOT NULL,
       name NVARCHAR(200) NOT NULL,
       email NVARCHAR(200) NOT NULL UNIQUE,
       passwordHash NVARCHAR(500) NOT NULL,
       role NVARCHAR(50) NOT NULL DEFAULT 'admin',
       active BIT NOT NULL DEFAULT 1,
       createdAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-      CONSTRAINT FK_Users_Tenants FOREIGN KEY (tenantId) REFERENCES Tenants(id)
+      CONSTRAINT FK_Users_Businesses FOREIGN KEY (businessId) REFERENCES Businesses(id)
     );
   `);
 
-  // 3. Check if Larissa tenant already exists
-  const existing = await masterPool.request()
+  // 3. Check if business already exists
+  const existing = await hubPool.request()
     .input('slug', sql.NVarChar(100), 'larissa')
-    .query('SELECT id FROM Tenants WHERE slug = @slug');
+    .query('SELECT id FROM Businesses WHERE slug = @slug');
 
   if (existing.recordset.length > 0) {
-    console.log('Tenant "larissa" already exists. Skipping seed.');
-    await masterPool.close();
+    console.log('Business "larissa" already exists. Skipping seed.');
+    await hubPool.close();
     return;
   }
 
-  // 4. Create Larissa tenant (points to existing 'Pizzaria' database)
-  console.log('Creating Larissa tenant...');
-  const tenantResult = await masterPool.request()
-    .input('name', sql.NVarChar(200), 'Pizzaria da Larissa')
-    .input('slug', sql.NVarChar(100), 'larissa')
-    .input('dbName', sql.NVarChar(128), 'Pizzaria')
+  // 4. Create initial business
+  console.log('Creating initial business...');
+  const businessSlug = 'larissa';
+  const businessName = 'Pizzaria da Larissa';
+  const businessResult = await hubPool.request()
+    .input('name', sql.NVarChar(200), businessName)
+    .input('slug', sql.NVarChar(100), businessSlug)
     .query(`
-      INSERT INTO Tenants (name, slug, dbName)
+      INSERT INTO Businesses (name, slug)
       OUTPUT inserted.id
-      VALUES (@name, @slug, @dbName)
+      VALUES (@name, @slug)
     `);
 
-  const tenantId = tenantResult.recordset[0].id;
+  const businessId = businessResult.recordset[0].id;
 
   // 5. Create admin user
   console.log('Creating admin user...');
   const passwordHash = await bcrypt.hash('123456', 10);
 
-  await masterPool.request()
-    .input('tenantId', sql.UniqueIdentifier, tenantId)
+  await hubPool.request()
+    .input('businessId', sql.UniqueIdentifier, businessId)
     .input('name', sql.NVarChar(200), 'Larissa')
     .input('email', sql.NVarChar(200), 'larissa@pizzaria.com')
     .input('passwordHash', sql.NVarChar(500), passwordHash)
     .query(`
-      INSERT INTO Users (tenantId, name, email, passwordHash, role)
-      VALUES (@tenantId, @name, @email, @passwordHash, 'admin')
+      INSERT INTO Users (businessId, name, email, passwordHash, role)
+      VALUES (@businessId, @name, @email, @passwordHash, 'admin')
     `);
 
   console.log('');
   console.log('=== Seed concluído! ===');
   console.log('Login: larissa@pizzaria.com');
   console.log('Senha: 123456');
-  console.log('Banco: Pizzaria (já existente)');
   console.log('');
 
-  await masterPool.close();
+  await hubPool.close();
 }
 
 run().catch(err => {
