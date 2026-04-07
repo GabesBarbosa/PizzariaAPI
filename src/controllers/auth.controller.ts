@@ -16,15 +16,15 @@ export const login = async (req: Request, res: Response, next: NextFunction) => 
 
 export const register = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { name, email, password, tenantName, tenantSlug } = req.body;
-    if (!name || !email || !password || !tenantName || !tenantSlug) {
+    const { name, email, password, businessName, businessSlug } = req.body;
+    if (!name || !email || !password || !businessName || !businessSlug) {
       return res.status(400).json({ message: 'Todos os campos são obrigatórios' });
     }
     // Validate slug format
-    if (!/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(tenantSlug) || tenantSlug.length < 3) {
+    if (!/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(businessSlug) || businessSlug.length < 3) {
       return res.status(400).json({ message: 'Slug inválido. Use letras minúsculas, números e hífens (mín. 3 caracteres)' });
     }
-    const result = await authService.register({ name, email, password, tenantName, tenantSlug });
+    const result = await authService.register({ name, email, password, businessName, businessSlug });
     res.status(201).json(result);
   } catch (err) {
     next(err);

@@ -1,12 +1,11 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import { tenantStorage } from '../database/tenantContext';
+import { businessStorage } from '../database/businessContext';
 import { getJwtSecret } from '../services/auth.service';
 
 export interface AuthPayload {
   userId: string;
-  tenantId: string;
-  dbName: string;
+  businessId: string;
   role: string;
 }
 
@@ -17,7 +16,6 @@ export const authMiddleware = (req: Request, res: Response, next: NextFunction) 
   if (header && header.startsWith('Bearer ')) {
     token = header.slice(7);
   } else if (typeof req.query.token === 'string' && req.query.token) {
-    // SSE / EventSource can't send headers, allow token via query param
     token = req.query.token;
   }
 
@@ -28,17 +26,14 @@ export const authMiddleware = (req: Request, res: Response, next: NextFunction) 
   try {
     const payload = jwt.verify(token, getJwtSecret()) as AuthPayload;
 
-    // Attach user info to request
     (req as any).user = {
       userId: payload.userId,
-      tenantId: payload.tenantId,
-      dbName: payload.dbName,
+      businessId: payload.businessId,
       role: payload.role
     };
 
-    // Run the rest of the request chain inside the tenant context
-    tenantStorage.run(
-      { tenantId: payload.tenantId, dbName: payload.dbName, userId: payload.userId },
+    businessStorage.run(
+      { businessId: payload.businessId, userId: payload.userId, role: payload.role },
       () => next()
     );
   } catch (err) {
