@@ -1,8 +1,11 @@
+export interface OrderItemVariationDTO {
+  variationId: string;
+}
+
 export interface CreateOrderItemDTO {
   productId: string;
   quantity: number;
-  size?: 'normal' | 'brotinho';
-  halfProductId?: string;
+  variations?: OrderItemVariationDTO[];
 }
 
 export interface CreateOrderDTO {

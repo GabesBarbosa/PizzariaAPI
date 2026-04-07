@@ -11,3 +11,15 @@ export interface UpdateProductDTO {
   price?: number;
   category?: string;
 }
+
+export interface CreateVariationDTO {
+  name: string;
+  type: 'size' | 'addon' | 'removal' | 'custom';
+  priceModifier: number;
+}
+
+export interface UpdateVariationDTO {
+  name?: string;
+  type?: 'size' | 'addon' | 'removal' | 'custom';
+  priceModifier?: number;
+}

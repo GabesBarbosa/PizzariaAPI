@@ -7,6 +7,6 @@ export interface RegisterDTO {
   name: string;
   email: string;
   password: string;
-  tenantName: string;  // Nome da pizzaria
-  tenantSlug: string;  // Slug único (ex: 'larissa', 'dom-pedro')
+  businessName: string;  // Nome do restaurante
+  businessSlug: string;  // Slug único (ex: 'burger-joao', 'cantina-napoli')
 }
