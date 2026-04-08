@@ -3,7 +3,7 @@ FROM node:18-bookworm AS builder
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci
+RUN npm install
 
 COPY . .
 RUN npm run build
@@ -17,8 +17,6 @@ COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/src ./src
-
-RUN mkdir -p /app/.wwebjs_auth && chown -R node:node /app/.wwebjs_auth
 
 ENV NODE_ENV=production
 
