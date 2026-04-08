@@ -5,6 +5,8 @@ export interface OrderItemVariationDTO {
 export interface CreateOrderItemDTO {
   productId: string;
   quantity: number;
+  size?: string;
+  halfProductId?: string;
   variations?: OrderItemVariationDTO[];
 }
 

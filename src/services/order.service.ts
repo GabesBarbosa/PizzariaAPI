@@ -1,6 +1,7 @@
 import * as orderRepo from '../repositories/order.repository';
 import * as customerRepo from '../repositories/customer.repository';
 import { sendTextMessage } from './whatsapp.service';
+import { getBusinessContext } from '../database/businessContext';
 import { CreateOrderDTO } from '../dtos/order.dto';
 import logger from '../utils/logger';
 import { broadcast } from './notification.service';
@@ -69,7 +70,9 @@ async function notifyCustomerStatusChange(orderId: number, status: string): Prom
     text += '\n\n' + buildReceiptText(order, customer.name);
   }
 
-  await sendTextMessage(customer.phone, text);
+  const ctx = getBusinessContext();
+  if (!ctx) return;
+  await sendTextMessage(ctx.businessId, customer.phone, text);
   logger.info(`[WhatsApp] Notificação enviada: pedido #${orderId} → ${customer.phone}`);
 }
 

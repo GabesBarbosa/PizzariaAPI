@@ -78,5 +78,10 @@ export const deleteCustomer = async (id: string) => {
   const request = conn.request();
   request.input('id', sql.UniqueIdentifier, id);
   request.input('businessId', sql.UniqueIdentifier, businessId);
-  await request.query('DELETE FROM Customers WHERE id = @id AND businessId = @businessId');
+  // Desvincula pedidos existentes antes de deletar (preserva histórico)
+  await request.query('UPDATE Orders SET customerId = NULL WHERE customerId = @id AND businessId = @businessId');
+  await conn.request()
+    .input('id', sql.UniqueIdentifier, id)
+    .input('businessId', sql.UniqueIdentifier, businessId)
+    .query('DELETE FROM Customers WHERE id = @id AND businessId = @businessId');
 };

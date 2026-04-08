@@ -2,8 +2,9 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as customerRepo from '../repositories/customer.repository';
 import * as productRepo from '../repositories/product.repository';
 import { createOrder } from '../repositories/order.repository';
-import { getDeliveryFee, getChatbotMode } from '../repositories/settings.repository';
-import { handleHardcodedMessage } from './chatbot-hardcoded.service';
+import { getDeliveryFee, getChatbotMode, getChatbotEnabled, getChatbotConfig, type ChatbotConfig } from '../repositories/settings.repository';
+import { handleHamburguerMessage } from './chatbot-hamburger.service';
+import { getBusinessContext } from '../database/businessContext';
 import { CreateOrderItemDTO } from '../dtos/order.dto';
 import { broadcast } from './notification.service';
 import logger from '../utils/logger';
@@ -15,7 +16,6 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 /* ─── Constantes ─── */
 
 const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
-const BROTINHO_MULTIPLIER = 0.65;
 const PRODUCT_CACHE_TTL = 5 * 60 * 1000;
 const MAX_HISTORY = 12;
 
@@ -25,7 +25,7 @@ interface CartItem {
   productId: string;
   productName: string;
   quantity: number;
-  size: 'normal' | 'brotinho';
+  size: string;
   halfProductId?: string;
   halfProductName?: string;
   unitPrice: number;
@@ -38,14 +38,21 @@ interface Session {
   customerName?: string;
   savedAddress?: string;
   lastActivity: number;
-  processing: boolean; // lock: evita race condition se duas msgs chegam juntas
+  processing: boolean;
 }
 
-/* ─── Estado em memória ─── */
+interface ProductCache {
+  products: any[];
+  cacheTime: number;
+}
 
+/* ─── Estado em memória (escopado por businessId) ─── */
+
+// Chave: "businessId:phone"
 const sessions = new Map<string, Session>();
-let productsCache: any[] | null = null;
-let cacheTime = 0;
+
+// Chave: businessId
+const productsCacheMap = new Map<string, ProductCache>();
 
 /* ─── Helpers ─── */
 
@@ -54,33 +61,40 @@ function brl(v: number): string {
 }
 
 function extractPhone(chatId: string): string {
-  // Todos os números são brasileiros: remove o código do país 55
-  // Ex: "5511999999999@c.us" → "11999999999"
-  const digits = chatId.replace(/\D/g, '');
+  // JID do Baileys: "5511910731832:7@s.whatsapp.net" — strip device ID e server
+  const clean = chatId.split('@')[0].split(':')[0];
+  const digits = clean.replace(/\D/g, '');
   return digits.startsWith('55') ? digits.slice(2) : digits;
 }
 
-function getSession(phone: string): Session {
-  let s = sessions.get(phone);
+function sessionKey(businessId: string, phone: string): string {
+  return `${businessId}:${phone}`;
+}
+
+function getSession(businessId: string, phone: string): Session {
+  const key = sessionKey(businessId, phone);
+  let s = sessions.get(key);
   if (s && Date.now() - s.lastActivity > SESSION_TIMEOUT_MS) {
-    sessions.delete(phone);
+    sessions.delete(key);
     s = undefined;
   }
   if (!s) {
     s = { messages: [], cart: [], lastActivity: Date.now(), processing: false };
-    sessions.set(phone, s);
+    sessions.set(key, s);
   }
   s.lastActivity = Date.now();
   return s as Session;
 }
 
-async function loadProducts(): Promise<any[]> {
+async function loadProducts(businessId: string): Promise<any[]> {
   const now = Date.now();
-  if (!productsCache || now - cacheTime > PRODUCT_CACHE_TTL) {
-    productsCache = await productRepo.getAllProducts();
-    cacheTime = now;
+  const cached = productsCacheMap.get(businessId);
+  if (!cached || now - cached.cacheTime > PRODUCT_CACHE_TTL) {
+    const products = await productRepo.getAllProducts();
+    productsCacheMap.set(businessId, { products, cacheTime: now });
+    return products;
   }
-  return productsCache!;
+  return cached.products;
 }
 
 function buildMenuText(products: any[]): string {
@@ -98,7 +112,7 @@ function buildMenuText(products: any[]): string {
   return menu;
 }
 
-/* ─── Helpers de histórico ──────────────────────────────────────────────── */
+/* ─── Helpers de histórico ─── */
 
 function compressOldToolCalls(messages: Anthropic.MessageParam[], keepLast = 4): Anthropic.MessageParam[] {
   if (messages.length <= keepLast) return messages;
@@ -114,18 +128,12 @@ function compressOldToolCalls(messages: Anthropic.MessageParam[], keepLast = 4):
 }
 
 function needsMenu(msg: string): boolean {
-  return /card[áa]pio|menu|\bpizza|\bopç[oõ]es\b|quero|pedido|pre[çc]o|sabor|tem\s+(a[íi]|disponível)/i.test(msg);
+  return /card[áa]pio|menu|\bopç[oõ]es\b|quero|pedido|pre[çc]o|sabor|tem\s+(a[íi]|disponível)/i.test(msg);
 }
 
-/* ─── Triggers (respostas diretas sem gastar tokens de IA) ─────────────────
- * Cada trigger tem:
- *   patterns  — lista de RegExp; basta uma coincidir (case-insensitive)
- *   response  — função que recebe (products, session, deliveryFee) e retorna a resposta
- *
- * Para adicionar um novo trigger, basta incluir mais um objeto nesta lista.
- * ─────────────────────────────────────────────────────────────────────────── */
+/* ─── Triggers ─── */
 
-type TriggerFn = (products: any[], session: Session, deliveryFee: number) => string;
+type TriggerFn = (products: any[], session: Session, deliveryFee: number, config: ChatbotConfig) => string;
 
 interface Trigger {
   patterns: RegExp[];
@@ -133,60 +141,62 @@ interface Trigger {
 }
 
 const TRIGGERS: Trigger[] = [
-  /* ── Cardápio completo com ingredientes ─────────────────────────────────── */
   {
     patterns: [
       /card[áa]pio/i,
       /\bmenu\b/i,
       /o que (voc[êe]s? )?(tem|têm|vend[ée]|tem\s+a[íi])/i,
-      /quais (s[ãa]o )?(as )?pizzas/i,
-      /lista\s+(de\s+)?(pizzas?|produtos?|sabores?|itens?)/i,
+      /quais (s[ãa]o )?(os? )?(produtos?|itens?|op[çc][oõ]es?)/i,
+      /lista\s+(de\s+)?(produtos?|sabores?|itens?)/i,
       /me\s+(manda|passa|mostra|envia)\s+(o\s+)?card[áa]pio/i,
       /ver\s+(o\s+)?card[áa]pio/i,
       /quero\s+ver\s+(o\s+)?card[áa]pio/i,
     ],
-    response: (products, _session, deliveryFee) => {
+    response: (products, _session, deliveryFee, config) => {
+      const { sizeOptions, paymentMethods } = config;
+      const sizeKeys = Object.keys(sizeOptions);
       const categories = [...new Set(products.map((p: any) => p.category))].sort() as string[];
       const feeText = deliveryFee > 0 ? brl(deliveryFee) : 'grátis';
-      let msg = '🍕 *CARDÁPIO PIZZATEC* 🍕\n';
+      let msg = '📋 *CARDÁPIO*\n';
       msg += '─────────────────────\n\n';
       for (const cat of categories) {
         msg += `*${cat.toUpperCase()}*\n\n`;
         for (const p of products.filter((x: any) => x.category === cat)) {
           const price = parseFloat(p.price);
-          const brotinho = Math.round(price * BROTINHO_MULTIPLIER * 100) / 100;
-          msg += `🍕 *${p.name}*\n`;
+          msg += `• *${p.name}*\n`;
           if (p.description) msg += `   ${p.description}\n`;
-          msg += `   Normal: *${brl(price)}*`;
-          msg += `  |  Brotinho: *${brl(brotinho)}*\n\n`;
+          if (sizeKeys.length === 1) {
+            const multiplier = sizeOptions[sizeKeys[0]].multiplier ?? 1;
+            msg += `   ${brl(Math.round(price * multiplier * 100) / 100)}\n\n`;
+          } else {
+            const priceList = sizeKeys.map(key => {
+              const opt = sizeOptions[key];
+              return `${opt.label}: *${brl(Math.round(price * opt.multiplier * 100) / 100)}*`;
+            }).join('  |  ');
+            msg += `   ${priceList}\n\n`;
+          }
         }
       }
       msg += '─────────────────────\n';
       msg += `🚚 Taxa de entrega: *${feeText}*\n`;
-      msg += `💳 Pagamento: Dinheiro, Cartão ou PIX\n\n`;
+      msg += `💳 Pagamento: ${paymentMethods.map(pm => pm.label).join(', ')}\n\n`;
       msg += 'Para fazer seu pedido é só me dizer! 😊';
       return msg;
     },
   },
 ];
 
-/**
- * Verifica se a mensagem bate com algum trigger.
- * Se sim, retorna a resposta pronta (sem chamar a IA) e salva no histórico.
- * Se não, retorna null para o fluxo normal de IA continuar.
- */
-function checkTriggers(body: string, products: any[], session: Session, deliveryFee: number): string | null {
+function checkTriggers(body: string, products: any[], session: Session, deliveryFee: number, config: ChatbotConfig): string | null {
   const text = body.trim();
   for (const trigger of TRIGGERS) {
     if (trigger.patterns.some(p => p.test(text))) {
-      const reply = trigger.response(products, session, deliveryFee);
-      // Salva no histórico para a IA ter contexto nas mensagens seguintes
+      const reply = trigger.response(products, session, deliveryFee, config);
       session.messages.push({ role: 'user',      content: body });
       session.messages.push({ role: 'assistant', content: reply });
       if (session.messages.length > MAX_HISTORY) {
         session.messages = session.messages.slice(-MAX_HISTORY);
       }
-      logger.info(`[Chatbot Trigger] "${text.slice(0, 40)}" → trigger disparado (sem token gasto)`);
+      logger.info(`[Chatbot Trigger] "${text.slice(0, 40)}" → trigger disparado`);
       return reply;
     }
   }
@@ -195,70 +205,71 @@ function checkTriggers(body: string, products: any[], session: Session, delivery
 
 /* ─── Ferramentas (Tools) ─── */
 
-const tools: Anthropic.Tool[] = [
-  {
-    name: 'find_or_create_customer',
-    description: 'Busca o cliente pelo telefone cadastrado. Se não existir, cria o cadastro com nome e endereço — ambos obrigatórios para novos clientes.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        name:       { type: 'string',  description: 'Nome completo do cliente — obrigatório para cadastro' },
-        address:    { type: 'string',  description: 'Endereço completo do cliente — obrigatório para cadastro' },
-        create_new: { type: 'boolean', description: 'true para criar o cadastro com nome e endereço fornecidos' },
+function buildTools(config: ChatbotConfig): Anthropic.Tool[] {
+  const sizeKeys = Object.keys(config.sizeOptions);
+  const paymentLabels = config.paymentMethods.map(pm => pm.label);
+
+  return [
+    {
+      name: 'find_or_create_customer',
+      description: 'Busca o cliente pelo telefone cadastrado. Se não existir, cria o cadastro com nome e endereço — ambos obrigatórios para novos clientes.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          name:       { type: 'string',  description: 'Nome completo do cliente — obrigatório para cadastro' },
+          address:    { type: 'string',  description: 'Endereço completo do cliente — obrigatório para cadastro' },
+          create_new: { type: 'boolean', description: 'true para criar o cadastro com nome e endereço fornecidos' },
+        },
+        required: [],
       },
-      required: [],
     },
-  },
-  {
-    name: 'add_to_cart',
-    description: 'Adiciona um item ao carrinho. Para pizzas meio a meio, informe também o segundo sabor.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        product_id:        { type: 'string', description: 'ID do produto (conforme cardápio)' },
-        product_name:      { type: 'string', description: 'Nome do produto' },
-        quantity:          { type: 'number', description: 'Quantidade (1-50)' },
-        size:              { type: 'string', enum: ['normal', 'brotinho'], description: 'Tamanho — brotinho = 65% do preço normal' },
-        unit_price:        { type: 'number', description: 'Preço unitário já calculado (considere tamanho e meio a meio)' },
-        half_product_id:   { type: 'string', description: 'ID do segundo sabor (pizza meio a meio)' },
-        half_product_name: { type: 'string', description: 'Nome do segundo sabor (pizza meio a meio)' },
+    {
+      name: 'add_to_cart',
+      description: 'Adiciona um item ao carrinho. Para itens meio a meio, informe também o segundo produto.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          product_id:        { type: 'string', description: 'ID do produto (conforme cardápio)' },
+          product_name:      { type: 'string', description: 'Nome do produto' },
+          quantity:          { type: 'number', description: 'Quantidade (1-50)' },
+          size:              { type: 'string', enum: sizeKeys, description: 'Tamanho do produto' },
+          unit_price:        { type: 'number', description: 'Preço unitário já calculado' },
+          half_product_id:   { type: 'string', description: 'ID do segundo produto (item meio a meio)' },
+          half_product_name: { type: 'string', description: 'Nome do segundo produto (item meio a meio)' },
+        },
+        required: ['product_id', 'product_name', 'quantity', 'size', 'unit_price'],
       },
-      required: ['product_id', 'product_name', 'quantity', 'size', 'unit_price'],
     },
-  },
-  {
-    name: 'remove_from_cart',
-    description: 'Remove um item do carrinho pelo índice (0-based).',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        index: { type: 'number', description: 'Índice do item a remover (0-based)' },
+    {
+      name: 'remove_from_cart',
+      description: 'Remove um item do carrinho pelo índice (0-based).',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          index: { type: 'number', description: 'Índice do item a remover (0-based)' },
+        },
+        required: ['index'],
       },
-      required: ['index'],
     },
-  },
-  {
-    name: 'view_cart',
-    description: 'Retorna o conteúdo atual do carrinho com itens e total.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {},
-      required: [],
+    {
+      name: 'view_cart',
+      description: 'Retorna o conteúdo atual do carrinho com itens e total.',
+      input_schema: { type: 'object' as const, properties: {}, required: [] },
     },
-  },
-  {
-    name: 'create_order',
-    description: 'Cria o pedido final com os itens do carrinho. Só chamar após confirmação explícita do cliente.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        delivery_address: { type: 'string', description: 'Endereço completo de entrega ou "RETIRADA NO LOCAL"' },
-        payment_method:   { type: 'string', enum: ['Dinheiro', 'Cartão', 'PIX'], description: 'Forma de pagamento' },
+    {
+      name: 'create_order',
+      description: 'Cria o pedido final com os itens do carrinho. Só chamar após confirmação explícita do cliente.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          delivery_address: { type: 'string', description: 'Endereço completo de entrega ou "RETIRADA NO LOCAL"' },
+          payment_method:   { type: 'string', enum: paymentLabels, description: 'Forma de pagamento' },
+        },
+        required: ['delivery_address', 'payment_method'],
       },
-      required: ['delivery_address', 'payment_method'],
     },
-  },
-];
+  ];
+}
 
 /* ─── Execução das ferramentas ─── */
 
@@ -275,7 +286,6 @@ async function executeTool(
 
       case 'find_or_create_customer': {
         if (session.customerId) {
-          logger.info(`[Chatbot] find_or_create_customer: sessão já tem customerId=${session.customerId} (${session.customerName})`);
           return JSON.stringify({
             customerId: session.customerId,
             customerName: session.customerName,
@@ -283,13 +293,11 @@ async function executeTool(
             isNew: false,
           });
         }
-        logger.info(`[Chatbot] find_or_create_customer: buscando telefone=${cleanPhone}, create_new=${input.create_new}`);
         const found = await customerRepo.findCustomersByNameOrPhone(cleanPhone);
         if (found.length > 0) {
-          session.customerId = found[0].id;
+          session.customerId   = found[0].id;
           session.customerName = found[0].name;
           session.savedAddress = found[0].address || undefined;
-          logger.info(`[Chatbot] Cliente encontrado: id=${found[0].id}, nome=${found[0].name}`);
           return JSON.stringify({
             customerId: found[0].id,
             customerName: found[0].name,
@@ -304,10 +312,8 @@ async function executeTool(
           session.customerId   = customer.id;
           session.customerName = input.name;
           session.savedAddress = input.address;
-          logger.info(`[Chatbot] Cliente CRIADO: id=${customer.id}, nome=${input.name}, telefone=${cleanPhone}`);
           return JSON.stringify({ customerId: customer.id, customerName: input.name, savedAddress: input.address, isNew: true });
         }
-        logger.info(`[Chatbot] Cliente não encontrado para telefone=${cleanPhone}, aguardando dados para cadastro`);
         return JSON.stringify({ found: false, message: 'Cliente não encontrado. Colete nome e endereço para cadastro.' });
       }
 
@@ -353,7 +359,6 @@ async function executeTool(
       case 'create_order': {
         if (session.cart.length === 0) return JSON.stringify({ error: 'Carrinho vazio' });
         if (!session.customerId) {
-          logger.error(`[Chatbot] create_order chamado sem customerId! telefone=${phone}`);
           return JSON.stringify({ error: 'Cliente não identificado. Por favor, faça o cadastro primeiro.' });
         }
 
@@ -367,8 +372,6 @@ async function executeTool(
           halfProductId: item.halfProductId,
         }));
 
-        logger.info(`[Chatbot] Criando pedido: customerId=${session.customerId}, itens=${items.length}, entrega=${input.delivery_address}, pagamento=${input.payment_method}, taxa=${deliveryFee}`);
-
         const order = await createOrder({
           customerId:      session.customerId,
           items,
@@ -379,11 +382,9 @@ async function executeTool(
           channel:         'whatsapp',
         });
 
-        logger.info(`[Chatbot] Pedido CRIADO: id=${order.id}, total=${order.total}, customerId=${session.customerId}`);
-
         if (!isPickup && session.customerId) {
           await customerRepo.updateCustomer(session.customerId, { address: input.delivery_address }).catch((e: any) => {
-            logger.warn(`[Chatbot] Falha ao atualizar endereço do cliente: ${e.message}`);
+            logger.warn(`[Chatbot] Falha ao atualizar endereço: ${e.message}`);
           });
         }
 
@@ -404,7 +405,6 @@ async function executeTool(
     }
   } catch (err: any) {
     logger.error(`[Chatbot Tool] ${name} ERRO: ${err.message}`);
-    logger.error(`[Chatbot Tool] Stack: ${err.stack || '(sem stack)'}`);
     return JSON.stringify({ error: err.message });
   }
 }
@@ -412,13 +412,17 @@ async function executeTool(
 /* ─── Ponto de entrada ─── */
 
 export async function handleMessage(phone: string, body: string): Promise<string> {
-  // Roteamento por modo — verificado antes de criar sessão IA para não misturar estados
+  const { businessId } = getBusinessContext()!;
+
+  const chatbotEnabled = await getChatbotEnabled();
+  if (!chatbotEnabled) return '';
+
   const chatbotMode = await getChatbotMode();
   if (chatbotMode === 'triggers') {
-    return handleHardcodedMessage(phone, body);
+    return handleHamburguerMessage(phone, body);
   }
 
-  const session = getSession(phone);
+  const session = getSession(businessId, phone);
 
   if (session.processing) {
     return '⏳ Ainda estou processando sua mensagem anterior. Aguarde um momento e tente novamente.';
@@ -426,20 +430,33 @@ export async function handleMessage(phone: string, body: string): Promise<string
 
   session.processing = true;
   try {
-    const [products, deliveryFee] = await Promise.all([loadProducts(), getDeliveryFee()]);
+    const [products, deliveryFee, chatbotConfig] = await Promise.all([
+      loadProducts(businessId),
+      getDeliveryFee(),
+      getChatbotConfig(),
+    ]);
 
-    // Verifica triggers antes de gastar tokens da IA
-    const triggerReply = checkTriggers(body, products, session, deliveryFee);
+    const triggerReply = checkTriggers(body, products, session, deliveryFee, chatbotConfig);
     if (triggerReply) return triggerReply;
 
     const feeText = deliveryFee > 0 ? brl(deliveryFee) : 'grátis';
+    const { businessName, sizeOptions, paymentMethods } = chatbotConfig;
 
-    const basePrompt = `Você é o atendente virtual da *Pizzatec* 🍕, uma pizzaria delivery. Atenda clientes pelo WhatsApp de forma natural, simpática e eficiente.
+    // Monta texto de tamanhos dinamicamente
+    const sizesText = Object.entries(sizeOptions)
+      .map(([key, opt]) => `- "${key}" = ${Math.round(opt.multiplier * 100)}% do preço base (${opt.label})`)
+      .join('\n');
+
+    // Monta texto de pagamentos dinamicamente
+    const paymentsText = paymentMethods.map(pm => pm.label).join(', ');
+
+    const basePrompt = `Você é o atendente virtual da *${businessName}*. Atenda clientes pelo WhatsApp de forma natural, simpática e eficiente.
 
 **Regras de negócio:**
-- Pizzas tamanho "brotinho" = ${Math.round(BROTINHO_MULTIPLIER * 100)}% do preço normal (${Math.round((1 - BROTINHO_MULTIPLIER) * 100)}% de desconto)
-- Pizza meio a meio: preço baseado no sabor mais caro entre os dois
-- Formas de pagamento aceitas: Dinheiro, Cartão (na entrega), PIX
+**Tamanhos disponíveis:**
+${sizesText}
+- Itens meio a meio (quando disponível): preço baseado no produto mais caro entre os dois
+- Formas de pagamento aceitas: ${paymentsText}
 - Taxa de entrega: ${feeText} (retirada no local = isento)
 
 **FLUXO OBRIGATÓRIO — siga sempre nesta ordem:**
@@ -475,23 +492,19 @@ export async function handleMessage(phone: string, body: string): Promise<string
       { type: 'text', text: basePrompt + menuBlock, cache_control: { type: 'ephemeral' } },
     ];
 
-    // Adiciona mensagem do usuário ao histórico
     session.messages.push({ role: 'user', content: body });
-
-    // Trunca e comprime histórico para controlar custo
     session.messages = compressOldToolCalls(session.messages);
     if (session.messages.length > MAX_HISTORY) {
       session.messages = session.messages.slice(-MAX_HISTORY);
     }
 
-    // Loop agêntico
     while (true) {
       const response = await anthropic.messages.create(
         {
           model: 'claude-haiku-4-5',
           max_tokens: 1024,
           system: systemBlocks,
-          tools,
+          tools: buildTools(chatbotConfig),
           messages: session.messages,
         },
         {
@@ -499,7 +512,6 @@ export async function handleMessage(phone: string, body: string): Promise<string
         },
       );
 
-      // Salva resposta do assistente no histórico
       session.messages.push({ role: 'assistant', content: response.content });
 
       if (response.stop_reason === 'end_turn') {
@@ -509,23 +521,16 @@ export async function handleMessage(phone: string, body: string): Promise<string
 
       if (response.stop_reason === 'tool_use') {
         const toolResults: Anthropic.ToolResultBlockParam[] = [];
-
         for (const block of response.content) {
           if (block.type === 'tool_use') {
             const result = await executeTool(phone, block.name, block.input, session);
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: block.id,
-              content: result,
-            });
+            toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: result });
           }
         }
-
         session.messages.push({ role: 'user', content: toolResults });
         continue;
       }
 
-      // stop_reason inesperado
       break;
     }
 

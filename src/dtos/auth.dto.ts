@@ -8,4 +8,5 @@ export interface RegisterDTO {
   email: string;
   password: string;
   businessName: string;
+  businessType?: 'pizzaria' | 'hamburgueria' | 'generic';
 }

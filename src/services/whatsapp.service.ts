@@ -1,257 +1,337 @@
-import { Client, LocalAuth, Message } from 'whatsapp-web.js';
-import qrTerminal from 'qrcode-terminal';
+import makeWASocket, {
+  useMultiFileAuthState,
+  DisconnectReason,
+  WASocket,
+  makeCacheableSignalKeyStore,
+  fetchLatestBaileysVersion,
+  jidNormalizedUser,
+} from '@whiskeysockets/baileys';
+import pino from 'pino';
 import QRCode from 'qrcode';
 import fs from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
 import logger from '../utils/logger';
 import { handleMessage } from './chatbot.service';
 import { businessStorage } from '../database/businessContext';
 import { broadcast } from './notification.service';
 
-let client: Client | null = null;
-let qrCodeData: string | null = null;
-let isReady = false;
-let initializing = false;
-let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
-const processedMessages = new Set<string>();
+/* ─── Logger silencioso para Baileys (usa pino internamente) ─── */
 
-function removeSingletonLock(dataPath: string): void {
-  const lockPaths = [
-    path.join(dataPath, 'session-default', 'SingletonLock'),
-    path.join(dataPath, 'session-default', 'SingletonCookie'),
-    path.join(dataPath, 'session-default', 'SingletonSocket'),
-  ];
-  for (const lockPath of lockPaths) {
-    try {
-      if (fs.existsSync(lockPath)) {
-        fs.unlinkSync(lockPath);
-        console.log(`[WhatsApp] Lock removido: ${lockPath}`);
-      }
-    } catch { /* ignora */ }
-  }
+const baileysLogger = pino({ level: 'silent' });
+
+/* ─── Estado por negócio ─── */
+
+interface BusinessWhatsAppState {
+  socket: WASocket | null;
+  qrCodeData: string | null;
+  isReady: boolean;
+  initializing: boolean;
+  processedMessages: Set<string>;
+  retryCount: number;
+  // Cache LID → JID real (e.g. "21131272695827@lid" → "5511910731832@s.whatsapp.net")
+  lidCache: Map<string, string>;
+  // Grace period antes de reportar desconexão ao frontend
+  disconnectTimer: ReturnType<typeof setTimeout> | null;
 }
 
-export async function initWhatsApp(): Promise<void> {
-  if (initializing) {
-    console.log('[WhatsApp] Já inicializando, ignorando chamada duplicada.');
+const MAX_RETRIES = 5;
+const businessClients = new Map<string, BusinessWhatsAppState>();
+
+function getState(businessId: string): BusinessWhatsAppState {
+  let state = businessClients.get(businessId);
+  if (!state) {
+    state = {
+      socket: null,
+      qrCodeData: null,
+      isReady: false,
+      initializing: false,
+      processedMessages: new Set(),
+      retryCount: 0,
+      lidCache: new Map(),
+      disconnectTimer: null,
+    };
+    businessClients.set(businessId, state);
+  }
+  return state;
+}
+
+/* ─── Inicialização por negócio ─── */
+
+export async function initWhatsApp(businessId: string): Promise<void> {
+  const state = getState(businessId);
+
+  if (state.initializing) {
+    console.log(`[WhatsApp:${businessId}] Já inicializando, ignorando.`);
     return;
   }
-  initializing = true;
-  qrCodeData = null;
-  isReady = false;
 
-  if (watchdogTimer) { clearTimeout(watchdogTimer); watchdogTimer = null; }
-
-  if (client) {
-    try { client.removeAllListeners(); client.destroy(); } catch { /* ignora */ }
-    client = null;
+  if (state.retryCount >= MAX_RETRIES) {
+    console.error(`[WhatsApp:${businessId}] Limite de ${MAX_RETRIES} tentativas. Use restart.`);
+    return;
   }
 
-  // Matar processos Chromium stale (apenas Linux)
-  if (process.platform !== 'win32') {
-    try { execSync('pkill -f chromium || true', { stdio: 'ignore' }); } catch { /* ignora */ }
+  state.initializing = true;
+  state.qrCodeData = null;
+  state.isReady = false;
+
+  if (state.socket) {
+    try { state.socket.end(undefined); } catch { /* ignora */ }
+    state.socket = null;
   }
 
-  const isWindows = process.platform === 'win32';
-  const execPath = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
-  const dataPath = process.env.WWEBJS_DATA_PATH || '.wwebjs_auth';
-  console.log(`[WhatsApp] dataPath: ${dataPath}`);
-  console.log(`[WhatsApp] executablePath: ${execPath || '(bundled)'}`);
-  console.log(`[WhatsApp] platform: ${process.platform}`);
+  const baseDataPath = process.env.WWEBJS_DATA_PATH || '.wwebjs_auth';
+  const authDir = path.join(baseDataPath, businessId);
 
-  const baseArgs = [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    '--disable-accelerated-2d-canvas',
-    '--disable-gpu',
-    '--no-first-run',
-    '--disable-extensions',
-    '--disable-background-networking',
-    '--disable-default-apps',
-    '--disable-features=IsolateOrigins,site-per-process',
-  ];
-
-  // --single-process é necessário em containers Linux (Azure) mas quebra no Windows
-  if (!isWindows) {
-    baseArgs.push('--single-process');
+  if (!fs.existsSync(authDir)) {
+    fs.mkdirSync(authDir, { recursive: true });
   }
 
-  client = new Client({
-    authStrategy: new LocalAuth({ dataPath }),
-    webVersion: '2.2412.54',
-    webVersionCache: {
-      type: 'local',
-      path: process.env.WWEBJS_CACHE_PATH || (isWindows ? '.wwebjs_cache' : '/app/wwebjs_cache'),
-    },
-    puppeteer: {
-      headless: true,
-      executablePath: execPath,
-      timeout: 60000,
-      args: baseArgs,
-    }
-  });
+  console.log(`[WhatsApp:${businessId}] authDir: ${authDir} (tentativa ${state.retryCount + 1}/${MAX_RETRIES})`);
 
-  client.on('qr', async (qr: string) => {
-    console.log('[WhatsApp] QR event disparado, gerando imagem...');
-    qrCodeData = qr;
-    isReady = false;
-    logger.info('QR Code recebido! Escaneie pelo WhatsApp:');
-    qrTerminal.generate(qr, { small: true });
-    try {
-      const qrImage = await QRCode.toDataURL(qr, { width: 280, margin: 2 });
-      broadcast('whatsapp-status', { connected: false, qrCode: qrImage });
-    } catch { /* ignora */ }
-  });
+  try {
+    const { state: authState, saveCreds } = await useMultiFileAuthState(authDir);
+    const { version } = await fetchLatestBaileysVersion();
+    console.log(`[WhatsApp:${businessId}] Usando versão WA: ${version}`);
 
-  client.on('ready', () => {
-    if (watchdogTimer) { clearTimeout(watchdogTimer); watchdogTimer = null; }
-    isReady = true;
-    qrCodeData = null;
-    initializing = false;
-    logger.info('WhatsApp conectado com sucesso!');
-    broadcast('whatsapp-status', { connected: true, qrCode: null });
-  });
+    const socket = makeWASocket({
+      auth: {
+        creds: authState.creds,
+        keys: makeCacheableSignalKeyStore(authState.keys, baileysLogger),
+      },
+      version,
+      logger: baileysLogger,
+      defaultQueryTimeoutMs: 60000,
+    });
 
-  client.on('authenticated', () => {
-    logger.info('WhatsApp autenticado!');
-    // Watchdog único: reinicia se ready não disparar em 3 minutos
-    if (watchdogTimer) clearTimeout(watchdogTimer);
-    watchdogTimer = setTimeout(() => {
-      watchdogTimer = null;
-      if (!isReady) {
-        console.warn('[WhatsApp] Timeout: ready não disparou após autenticação. Reiniciando...');
-        initializing = false;
-        try { client?.removeAllListeners(); client?.destroy(); } catch {}
-        client = null;
-        initWhatsApp();
+    state.socket = socket;
+
+    const businessContext = {
+      businessId,
+      userId: 'whatsapp-bot',
+      role: 'bot',
+    };
+
+    // ── Persistir credenciais ──
+    socket.ev.on('creds.update', saveCreds);
+
+    // ── Cache de contatos: mapeia LID → JID real ──
+    socket.ev.on('contacts.upsert', (contacts) => {
+      for (const contact of contacts) {
+        if (contact.lid && contact.id) {
+          // lid: "21131272695827@lid" → id: "5511910731832@s.whatsapp.net"
+          state.lidCache.set(contact.lid, contact.id);
+        }
       }
-    }, 3 * 60 * 1000);
-  });
+    });
+    socket.ev.on('contacts.update', (updates) => {
+      for (const upd of updates) {
+        if (upd.lid && upd.id) {
+          state.lidCache.set(upd.lid, upd.id);
+        }
+      }
+    });
 
-  client.on('auth_failure', (msg: string) => {
-    isReady = false;
-    qrCodeData = null;
-    initializing = false;
-    logger.error('Falha na autenticação do WhatsApp:', msg);
-    logger.info('[WhatsApp] Reiniciando em 5s após auth_failure...');
-    setTimeout(() => initWhatsApp(), 5000);
-  });
+    // ── Eventos de conexão ──
+    socket.ev.on('connection.update', async (update) => {
+      const { connection, lastDisconnect, qr } = update;
 
-  client.on('disconnected', (reason: string) => {
-    isReady = false;
-    qrCodeData = null;
-    initializing = false;
-    logger.warn('WhatsApp desconectado:', reason);
-    broadcast('whatsapp-status', { connected: false, qrCode: null });
-    logger.info('[WhatsApp] Reiniciando em 5s após desconexão...');
-    setTimeout(() => initWhatsApp(), 5000);
-  });
+      // QR Code recebido — enviar para o frontend
+      if (qr) {
+        console.log(`[WhatsApp:${businessId}] QR Code recebido.`);
+        state.qrCodeData = qr;
+        state.isReady = false;
+        state.retryCount = 0;
+        try {
+          const qrImage = await QRCode.toDataURL(qr, { width: 280, margin: 2 });
+          broadcast('whatsapp-status', { businessId, connected: false, qrCode: qrImage });
+        } catch { /* ignora */ }
+      }
 
-  const whatsappBusinessContext = {
-    businessId: process.env.WHATSAPP_BUSINESS_ID || '',
-    userId: 'whatsapp-bot',
-    role: 'bot',
-  };
+      // Conectado — cancela qualquer grace period pendente
+      if (connection === 'open') {
+        if (state.disconnectTimer) {
+          clearTimeout(state.disconnectTimer);
+          state.disconnectTimer = null;
+        }
+        state.isReady = true;
+        state.qrCodeData = null;
+        state.initializing = false;
+        state.retryCount = 0;
+        logger.info(`[WhatsApp:${businessId}] Conectado com sucesso!`);
+        broadcast('whatsapp-status', { businessId, connected: true, qrCode: null });
+      }
 
-  client.on('message', async (message: Message) => {
-    try {
-      if (message.fromMe || message.from.endsWith('@g.us') || message.from === 'status@broadcast') return;
-      if (!message.body) return;
+      // Desconectado
+      if (connection === 'close') {
+        state.initializing = false;
+        state.socket = null;
 
-      const msgId = message.id._serialized;
-      if (processedMessages.has(msgId)) return;
-      processedMessages.add(msgId);
-      setTimeout(() => processedMessages.delete(msgId), 60_000);
+        const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
 
-      // Resolve o número real do cliente — contas novas usam LID e message.from
-      // retorna um ID interno (ex: 12692333056044) ao invés do telefone real.
-      // getContact().number retorna o número real (ex: 5511945175747).
-      let phoneForBot = message.from;
-      try {
-        const contact = await (message as any).getContact();
-        if (contact?.number) {
-          phoneForBot = contact.number + '@c.us';
-          if (phoneForBot !== message.from) {
-            console.log(`[WhatsApp] LID resolvido: ${message.from} → ${phoneForBot}`);
+        if (statusCode === DisconnectReason.loggedOut) {
+          // Logout definitivo — reporta imediatamente
+          if (state.disconnectTimer) { clearTimeout(state.disconnectTimer); state.disconnectTimer = null; }
+          state.isReady = false;
+          state.qrCodeData = null;
+          logger.warn(`[WhatsApp:${businessId}] Deslogado. Limpando sessão...`);
+          try { fs.rmSync(authDir, { recursive: true, force: true }); } catch { /* ignora */ }
+          state.retryCount = 0;
+          broadcast('whatsapp-status', { businessId, connected: false, qrCode: null });
+          setTimeout(() => initWhatsApp(businessId), 2000);
+        } else {
+          // Desconexão temporária — aguarda 8s antes de reportar ao frontend
+          // (reconexões normais do Baileys se resolvem antes disso)
+          state.retryCount++;
+          const delay = Math.min(5000 * state.retryCount, 30000);
+          logger.warn(`[WhatsApp:${businessId}] Desconectado (code=${statusCode}). Retry em ${delay / 1000}s...`);
+          setTimeout(() => initWhatsApp(businessId), delay);
+
+          if (!state.disconnectTimer) {
+            state.disconnectTimer = setTimeout(() => {
+              state.disconnectTimer = null;
+              if (!state.isReady) {
+                state.isReady = false;
+                state.qrCodeData = null;
+                broadcast('whatsapp-status', { businessId, connected: false, qrCode: null });
+                logger.warn(`[WhatsApp:${businessId}] Grace period esgotado — reportando desconexão.`);
+              }
+            }, 8_000);
           }
         }
-      } catch {
-        // fallback: usa message.from (pode ser LID, mas é o que temos)
       }
+    });
 
-      const reply = await businessStorage.run(whatsappBusinessContext, () =>
-        handleMessage(message.from, message.body)
-      );
-      if (reply && client) await client.sendMessage(message.from, reply);
-    } catch (err: any) {
-      logger.error(`[WhatsApp Bot] Erro ao processar mensagem de ${message.from}: ${err.message}`);
-    }
-  });
+    // ── Mensagens recebidas ──
+    socket.ev.on('messages.upsert', async ({ messages, type }) => {
+      if (type !== 'notify') return;
 
-  removeSingletonLock(dataPath);
-  console.log('[WhatsApp] Iniciando client... aguarde o QR Code.');
-  client.initialize().catch((err: any) => {
-    console.error('[WhatsApp] Erro ao inicializar:', err.message || err);
-    console.error('[WhatsApp] Stack:', err.stack || '(sem stack)');
-    initializing = false;
-    console.log('[WhatsApp] Reiniciando em 10s após falha no initialize...');
-    setTimeout(() => initWhatsApp(), 10000);
-  });
-}
+      for (const msg of messages) {
+        try {
+          if (msg.key.fromMe) continue;
+          if (!msg.message) continue;
+          if (msg.key.remoteJid?.endsWith('@g.us')) continue;
+          if (msg.key.remoteJid === 'status@broadcast') continue;
 
-export async function getStatus(): Promise<{ connected: boolean; qrCode: string | null }> {
-  console.log(`[WhatsApp] getStatus chamado — isReady: ${isReady}, temQR: ${!!qrCodeData}`);
-  let qrImage: string | null = null;
-  if (qrCodeData) {
-    try {
-      qrImage = await QRCode.toDataURL(qrCodeData, { width: 280, margin: 2 });
-      console.log('[WhatsApp] QR image gerada com sucesso');
-    } catch (e: any) {
-      console.error('[WhatsApp] Erro ao gerar QR image:', e.message);
-      qrImage = null;
+          const msgId = msg.key.id;
+          if (!msgId || state.processedMessages.has(msgId)) continue;
+          state.processedMessages.add(msgId);
+          setTimeout(() => state.processedMessages.delete(msgId), 60_000);
+
+          // Extrai texto (mensagem normal ou citação)
+          const body =
+            msg.message.conversation ||
+            msg.message.extendedTextMessage?.text ||
+            msg.message.imageMessage?.caption ||
+            msg.message.videoMessage?.caption ||
+            '';
+
+          if (!body) continue;
+
+          // replyJid: JID original do remetente — usado só para enviar a resposta.
+          // phone: identificador ESTÁVEL de sessão e cliente.
+          //   Sempre usa o replyJid normalizado SEM resolver LID,
+          //   garantindo que a mesma pessoa sempre tenha o mesmo phone
+          //   em todas as mensagens (msg.key.remoteJid não muda por usuário).
+          const replyJid = msg.key.remoteJid!;
+          const phone    = jidNormalizedUser(replyJid);
+
+          const reply = await businessStorage.run(businessContext, () =>
+            handleMessage(phone, body)
+          );
+
+          if (reply && state.socket) {
+            await state.socket.sendMessage(replyJid, { text: reply });
+          }
+        } catch (err: any) {
+          logger.error(`[WhatsApp:${businessId}] Erro ao processar mensagem: ${err.message}`);
+        }
+      }
+    });
+
+    state.initializing = false;
+
+  } catch (err: any) {
+    console.error(`[WhatsApp:${businessId}] Erro ao inicializar:`, err.message || err);
+    state.initializing = false;
+    state.retryCount++;
+
+    if (state.retryCount < MAX_RETRIES) {
+      const delay = Math.min(10000 * state.retryCount, 30000);
+      console.log(`[WhatsApp:${businessId}] Retry em ${delay / 1000}s...`);
+      setTimeout(() => initWhatsApp(businessId), delay);
     }
   }
-  return { connected: isReady, qrCode: qrImage };
 }
 
-export function restartWhatsApp(): void {
-  logger.info('[WhatsApp] Restart solicitado manualmente.');
-  initializing = false;
-  try { client?.removeAllListeners(); client?.destroy(); } catch { /* ignora erros no destroy */ }
-  client = null;
-  setTimeout(() => initWhatsApp(), 1000);
+/* ─── Status (lazy init: primeira chamada inicia o WhatsApp) ─── */
+
+export async function getStatus(businessId: string): Promise<{ connected: boolean; qrCode: string | null }> {
+  const state = getState(businessId);
+
+  // Só inicia se não há socket, não está inicializando e não há reconexão pendente
+  if (!state.isReady && !state.initializing && !state.socket && !state.disconnectTimer) {
+    state.retryCount = 0;
+    initWhatsApp(businessId);
+  }
+
+  let qrImage: string | null = null;
+  if (state.qrCodeData) {
+    try {
+      qrImage = await QRCode.toDataURL(state.qrCodeData, { width: 280, margin: 2 });
+    } catch { /* ignora */ }
+  }
+
+  return { connected: state.isReady, qrCode: qrImage };
 }
 
-function buildPhoneWithCountry(phone: string): string {
-  // Todos os números são brasileiros — adiciona 55 se não tiver
+/* ─── Restart ─── */
+
+export async function restartWhatsApp(businessId: string): Promise<void> {
+  logger.info(`[WhatsApp:${businessId}] Restart solicitado.`);
+  const state = getState(businessId);
+  state.initializing = false;
+  state.retryCount = 0;
+  if (state.socket) {
+    try { state.socket.end(undefined); } catch { /* ignora */ }
+    state.socket = null;
+  }
+  setTimeout(() => initWhatsApp(businessId), 1000);
+}
+
+/* ─── Envio de mensagens ─── */
+
+function buildJid(phone: string): string {
+  // Remove tudo que não é dígito e garante código do país
   const digits = phone.replace(/\D/g, '');
-  return digits.startsWith('55') ? digits : `55${digits}`;
+  const withCountry = digits.startsWith('55') ? digits : `55${digits}`;
+  return `${withCountry}@s.whatsapp.net`;
 }
 
-export const sendTextMessage = async (to: string, text: string) => {
-  if (!isReady || !client) {
+export const sendTextMessage = async (businessId: string, to: string, text: string) => {
+  const state = getState(businessId);
+  if (!state.isReady || !state.socket) {
     throw new Error('WhatsApp não está conectado. Escaneie o QR Code primeiro.');
   }
 
-  const phone = buildPhoneWithCountry(to);
+  const jid = buildJid(to);
 
-  // getNumberId resolve o chat ID correto (incluindo contas LID do novo sistema WhatsApp)
-  const numberId = await (client as any).getNumberId(phone);
-  if (!numberId) {
+  const results = await state.socket.onWhatsApp(jid);
+  const result = results?.[0];
+  if (!result?.exists) {
     throw new Error(`Número ${to} não está registrado no WhatsApp.`);
   }
 
-  const result = await client.sendMessage(numberId._serialized, text);
-  return { id: result.id._serialized, to: numberId._serialized, status: 'sent' };
+  const sent = await state.socket.sendMessage(result.jid, { text });
+  return { id: sent?.key.id, to: result.jid, status: 'sent' };
 };
 
 export const sendBulkMessages = async (
+  businessId: string,
   phones: string[],
   text: string
 ): Promise<{ success: string[]; failed: { phone: string; error: string }[] }> => {
-  if (!isReady) {
+  const state = getState(businessId);
+  if (!state.isReady) {
     throw new Error('WhatsApp não está conectado. Escaneie o QR Code primeiro.');
   }
 
@@ -260,7 +340,7 @@ export const sendBulkMessages = async (
 
   for (const phone of phones) {
     try {
-      await sendTextMessage(phone, text);
+      await sendTextMessage(businessId, phone, text);
       success.push(phone);
     } catch (err: any) {
       failed.push({ phone, error: err.message || 'Erro desconhecido' });

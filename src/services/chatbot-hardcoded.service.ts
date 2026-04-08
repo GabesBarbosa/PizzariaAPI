@@ -1,12 +1,20 @@
 /**
- * Chatbot hardcoded v2 — fluxo guiado: tamanho → sabor(es) → borda → entrega
- * Sem IA, sem gastar tokens.
+ * Chatbot hardcoded v3 — fluxo guiado dinâmico por business
+ * Cada negócio puxa suas configs (nome, bordas, tamanhos, pagamentos) do banco.
  */
 
 import * as customerRepo from '../repositories/customer.repository';
 import * as productRepo from '../repositories/product.repository';
 import { createOrder } from '../repositories/order.repository';
-import { getDeliveryFee } from '../repositories/settings.repository';
+import {
+  getDeliveryFee,
+  getChatbotConfig,
+  type CrustOption,
+  type SizeOption,
+  type PaymentOption,
+  type ChatbotConfig,
+} from '../repositories/settings.repository';
+import { getBusinessContext } from '../database/businessContext';
 import { CreateOrderItemDTO } from '../dtos/order.dto';
 import { broadcast } from './notification.service';
 import logger from '../utils/logger';
@@ -31,10 +39,8 @@ type State =
   | 'AWAIT_TROCO'
   | 'CONFIRMING';
 
-type PizzaSize = 'normal' | 'brotinho';
-
 interface CartPizza {
-  size: PizzaSize;
+  size: string;
   product1Id: string;
   product1Name: string;
   product2Id?: string;
@@ -42,11 +48,11 @@ interface CartPizza {
   crust?: string;
   crustPrice: number;
   pizzaNotes?: string;
-  unitPrice: number;       // preço calculado para exibição (inclui borda)
+  unitPrice: number;
 }
 
 interface PizzaBuilder {
-  size: PizzaSize;
+  size: string;
   maxFlavors: number;
   flavorStep: 1 | 2;
   product1?: any;
@@ -73,34 +79,18 @@ interface HSession {
 
 const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
 const PRODUCT_CACHE_TTL  =  5 * 60 * 1000;
+const CONFIG_CACHE_TTL   =  2 * 60 * 1000;
 
-const SIZE_LABELS: Record<PizzaSize, string> = {
-  normal:   'Pizza Normal',
-  brotinho: 'Brotinho',
-};
-
-const SIZE_MAX_FLAVORS: Record<PizzaSize, number> = {
-  normal:   2,
-  brotinho: 1,
-};
-
-const SIZE_MULTIPLIERS: Record<PizzaSize, number> = {
-  normal:   1.00,
-  brotinho: 0.65,
-};
-
-const CRUST_OPTIONS = [
-  { label: 'Catupiry Original', price: 8.00 },
-  { label: 'Cheddar',           price: 8.00 },
-  { label: 'Chocolate',         price: 8.00 },
-];
-
-/* ─── Estado em memória ─────────────────────────────────────────── */
+/* ─── Estado em memória (escopado por businessId) ────────────────── */
 
 const sessions   = new Map<string, HSession>();
-const lastOrders = new Map<string, CartPizza[]>(); // persiste entre sessões
-let productsCache: any[] | null = null;
-let cacheTime = 0;
+const lastOrders = new Map<string, CartPizza[]>();
+
+interface ProductCache { products: any[]; cacheTime: number; }
+const productsCacheMap = new Map<string, ProductCache>();
+
+interface ConfigCache { config: ChatbotConfig; cacheTime: number; }
+const configCacheMap = new Map<string, ConfigCache>();
 
 /* ─── Helpers ───────────────────────────────────────────────────── */
 
@@ -109,64 +99,93 @@ function brl(v: number) {
 }
 
 function extractPhone(chatId: string): string {
-  const d = chatId.replace(/\D/g, '');
+  // JID do Baileys: "5511910731832:7@s.whatsapp.net" — strip device ID e server
+  const clean = chatId.split('@')[0].split(':')[0];
+  const d = clean.replace(/\D/g, '');
   return d.startsWith('55') ? d.slice(2) : d;
 }
 
-function getSession(phone: string): HSession {
-  let s = sessions.get(phone);
+function sessionKey(businessId: string, phone: string): string {
+  return `${businessId}:${phone}`;
+}
+
+function getSession(businessId: string, phone: string): HSession {
+  const key = sessionKey(businessId, phone);
+  let s = sessions.get(key);
   if (s && Date.now() - s.lastActivity > SESSION_TIMEOUT_MS) {
-    sessions.delete(phone);
+    sessions.delete(key);
     s = undefined;
   }
   if (!s) {
     s = { state: 'INIT', cart: [], lastActivity: Date.now() };
-    sessions.set(phone, s);
+    sessions.set(key, s);
   }
   s.lastActivity = Date.now();
   return s;
 }
 
-async function loadProducts(): Promise<any[]> {
+async function loadProducts(businessId: string): Promise<any[]> {
   const now = Date.now();
-  if (!productsCache || now - cacheTime > PRODUCT_CACHE_TTL) {
-    productsCache = await productRepo.getAllProducts();
-    cacheTime = now;
+  const cached = productsCacheMap.get(businessId);
+  if (!cached || now - cached.cacheTime > PRODUCT_CACHE_TTL) {
+    const products = await productRepo.getAllProducts();
+    productsCacheMap.set(businessId, { products, cacheTime: now });
+    return products;
   }
-  return productsCache!;
+  return cached.products;
+}
+
+async function loadConfig(businessId: string): Promise<ChatbotConfig> {
+  const now = Date.now();
+  const cached = configCacheMap.get(businessId);
+  if (!cached || now - cached.cacheTime > CONFIG_CACHE_TTL) {
+    const config = await getChatbotConfig();
+    configCacheMap.set(businessId, { config, cacheTime: now });
+    return config;
+  }
+  return cached.config;
 }
 
 function getCategories(products: any[]): string[] {
   return [...new Set(products.map((p: any) => p.category as string))].sort();
 }
 
-function calcPizzaPrice(size: PizzaSize, p1Price: number, p2Price = 0, crustPrice = 0): number {
+function calcPizzaPrice(
+  sizeKey: string,
+  sizeOptions: Record<string, SizeOption>,
+  p1Price: number,
+  p2Price = 0,
+  crustPrice = 0,
+): number {
+  const multiplier = sizeOptions[sizeKey]?.multiplier ?? 1;
   const base = Math.max(p1Price, p2Price);
-  return Math.round((base * SIZE_MULTIPLIERS[size] + crustPrice) * 100) / 100;
+  return Math.round((base * multiplier + crustPrice) * 100) / 100;
 }
 
-/* ─── Mensagens ─────────────────────────────────────────────────── */
+/* ─── Mensagens (dinâmicas) ────────────────────────────────────── */
 
-function msgSizeMenu(): string {
-  return (
-    '🍕 *Qual o tamanho?*\n\n' +
-    '*1.* Normal — até 2 sabores\n' +
-    '*2.* Brotinho (individual) — 1 sabor'
-  );
+function msgSizeMenu(sizeOptions: Record<string, SizeOption>): string {
+  const keys = Object.keys(sizeOptions);
+  let msg = '📏 *Qual o tamanho?*\n\n';
+  keys.forEach((key, i) => {
+    const opt = sizeOptions[key];
+    msg += `*${i + 1}.* ${opt.label}\n`;
+  });
+  return msg;
 }
 
 function msgCategoryMenu(products: any[], step: number): string {
-  const label = step === 1 ? '1º Sabor' : step === 2 ? '2º Sabor' : '3º Sabor';
-  const cats  = getCategories(products);
-  let msg = `🍕 *Categoria do ${label}:*\n\n`;
+  const cats = getCategories(products);
+  const header = step === 2 ? '📂 *Categoria do 2º item:*' : '📂 *Escolha a categoria:*';
+  let msg = header + '\n\n';
   cats.forEach((cat, i) => { msg += `*${i + 1}.* ${cat}\n`; });
   return msg;
 }
 
 function msgFlavorMenu(products: any[], category: string, step: number): string {
-  const label = step === 1 ? '1º Sabor' : step === 2 ? '2º Sabor' : '3º Sabor';
+  const header = step === 2 ? `📋 *2º item — ${category}:*` : `📋 *${category}:*`;
   const items = products.filter((p: any) => p.category === category);
-  let msg = `🍕 *${label} — ${category}:*\n\n`;
+  let msg = header + '\n\n';
   items.forEach((p, i) => {
     msg += `*${i + 1}.* ${p.name}`;
     if (p.description) msg += ` — _${p.description}_`;
@@ -176,14 +195,47 @@ function msgFlavorMenu(products: any[], category: string, step: number): string 
   return msg;
 }
 
-function msgCrustMenu(): string {
-  let msg = '🧀 *Deseja borda recheada?*\n\n';
-  CRUST_OPTIONS.forEach((c, i) => { msg += `*${i + 1}.* ${c.label} — ${brl(c.price)}\n`; });
-  msg += `*${CRUST_OPTIONS.length + 1}.* Sem borda`;
+function msgMenuWithCategories(products: any[], sizeOptions: Record<string, SizeOption>): string {
+  const categories = getCategories(products);
+  const sizeKeys = Object.keys(sizeOptions);
+  let msg = '📋 *CARDÁPIO*\n';
+  msg += '─────────────────────\n\n';
+  for (const cat of categories) {
+    msg += `*${cat.toUpperCase()}*\n\n`;
+    for (const p of products.filter((x: any) => x.category === cat)) {
+      const price = parseFloat(p.price);
+      msg += `• *${p.name}*`;
+      if (p.description) msg += ` — _${p.description}_`;
+      msg += '\n';
+      if (sizeKeys.length <= 1) {
+        const mult = sizeKeys.length === 1 ? (sizeOptions[sizeKeys[0]].multiplier ?? 1) : 1;
+        msg += `   ${brl(Math.round(price * mult * 100) / 100)}\n`;
+      } else {
+        const prices = sizeKeys.map(k => `${sizeOptions[k].label}: ${brl(Math.round(price * (sizeOptions[k].multiplier ?? 1) * 100) / 100)}`).join(' | ');
+        msg += `   ${prices}\n`;
+      }
+      msg += '\n';
+    }
+  }
+  msg += '─────────────────────\n';
+  msg += '*Para pedir, escolha uma categoria:*\n\n';
+  categories.forEach((cat, i) => { msg += `*${i + 1}.* ${cat}\n`; });
   return msg;
 }
 
-function msgCartSummary(cart: CartPizza[], deliveryFee: number, isPickup: boolean): string {
+function msgCrustMenu(crustOptions: CrustOption[]): string {
+  let msg = '✨ *Deseja algum adicional?*\n\n';
+  crustOptions.forEach((c, i) => { msg += `*${i + 1}.* ${c.label} — ${brl(c.price)}\n`; });
+  msg += `*${crustOptions.length + 1}.* Sem adicional`;
+  return msg;
+}
+
+function msgCartSummary(
+  cart: CartPizza[],
+  deliveryFee: number,
+  isPickup: boolean,
+  sizeOptions: Record<string, SizeOption>,
+): string {
   let msg   = '📋 *SEU PEDIDO ATÉ AGORA*\n━━━━━━━━━━━━━━━━━━━━\n\n';
   let total = 0;
   cart.forEach((pizza, i) => {
@@ -191,9 +243,9 @@ function msgCartSummary(cart: CartPizza[], deliveryFee: number, isPickup: boolea
     const flavors = pizza.product2Name
       ? `Meio ${pizza.product1Name} / Meio ${pizza.product2Name}`
       : pizza.product1Name;
-    msg += `*${i + 1}.* ${SIZE_LABELS[pizza.size]}\n`;
-    msg += `   🍕 ${flavors}\n`;
-    if (pizza.crust)      msg += `   🧀 Borda: ${pizza.crust}\n`;
+    const sizeLabel = sizeOptions[pizza.size]?.label ?? pizza.size;
+    msg += `*${i + 1}.* ${sizeLabel} — ${flavors}\n`;
+    if (pizza.crust)      msg += `   ✨ Adicional: ${pizza.crust}\n`;
     if (pizza.pizzaNotes) msg += `   📝 ${pizza.pizzaNotes}\n`;
     msg += `   💰 ${brl(pizza.unitPrice)}\n\n`;
   });
@@ -201,21 +253,29 @@ function msgCartSummary(cart: CartPizza[], deliveryFee: number, isPickup: boolea
   if (fee > 0) msg += `🚚 Entrega: ${brl(fee)}\n`;
   msg += `*TOTAL: ${brl(total + fee)}*\n\n`;
   msg += '━━━━━━━━━━━━━━━━━━━━\n';
-  msg += '*1.* Adicionar outra pizza\n';
+  msg += '*1.* Adicionar outro item\n';
   msg += '*2.* Finalizar pedido';
+  return msg;
+}
+
+function msgPaymentMenu(paymentMethods: PaymentOption[]): string {
+  let msg = '💳 *Forma de pagamento:*\n';
+  paymentMethods.forEach((pm, i) => { msg += `*${i + 1}.* ${pm.label}\n`; });
   return msg;
 }
 
 /* ─── Ponto de entrada ──────────────────────────────────────────── */
 
 export async function handleHardcodedMessage(phone: string, body: string): Promise<string> {
-  const session    = getSession(phone);
+  const { businessId } = getBusinessContext()!;
+  const session    = getSession(businessId, phone);
   const cleanPhone = extractPhone(phone);
   const text       = body.trim().toLowerCase();
+  const key        = sessionKey(businessId, phone);
 
   /* ── Comandos globais ── */
   if (/^(cancelar|sair|recomeçar|recomecar|cancel)$/.test(text)) {
-    sessions.delete(phone);
+    sessions.delete(key);
     return '❌ Pedido cancelado. Quando quiser, é só chamar! 😊';
   }
   if (/^(ajuda|help|\?)$/.test(text)) {
@@ -226,12 +286,19 @@ export async function handleHardcodedMessage(phone: string, body: string): Promi
       '• *voltar* — passo anterior'
     );
   }
-  if (/^(carrinho|ver carrinho)$/.test(text) && session.cart.length > 0) {
-    const [, deliveryFee] = await Promise.all([loadProducts(), getDeliveryFee()]);
-    return msgCartSummary(session.cart, deliveryFee, false);
-  }
 
-  const [products, deliveryFee] = await Promise.all([loadProducts(), getDeliveryFee()]);
+  const [products, deliveryFee, config] = await Promise.all([
+    loadProducts(businessId),
+    getDeliveryFee(),
+    loadConfig(businessId),
+  ]);
+
+  const { businessName, crustOptions, sizeOptions, paymentMethods } = config;
+  const sizeKeys = Object.keys(sizeOptions);
+
+  if (/^(carrinho|ver carrinho)$/.test(text) && session.cart.length > 0) {
+    return msgCartSummary(session.cart, deliveryFee, false, sizeOptions);
+  }
 
   switch (session.state) {
 
@@ -243,37 +310,38 @@ export async function handleHardcodedMessage(phone: string, body: string): Promi
         session.customerName = found[0].name;
         session.savedAddress = found[0].address || undefined;
 
-        const last = lastOrders.get(cleanPhone);
+        const last = lastOrders.get(key);
         if (last && last.length > 0) {
           const flavorDesc = last[0].product2Name
             ? `Meio ${last[0].product1Name} / Meio ${last[0].product2Name}`
             : last[0].product1Name;
+          const sizeLabel = sizeOptions[last[0].size]?.label ?? last[0].size;
           session.state = 'REPEAT_OFFER';
           return (
             `Olá, *${found[0].name}*! 👋 Saudades de você! 🍕\n\n` +
             `🔄 *Repetir seu último pedido?*\n` +
-            `_${SIZE_LABELS[last[0].size]} — ${flavorDesc}_\n\n` +
+            `_${sizeLabel} — ${flavorDesc}_\n\n` +
             '*1.* Sim, quero o mesmo!\n' +
             '*2.* Quero fazer um novo pedido'
           );
         }
-        session.state = 'SELECT_SIZE';
-        return `Olá, *${found[0].name}*! 👋 Que bom ter você de volta! 🍕\n\n` + msgSizeMenu();
+        session.state = 'SELECT_CAT';
+        return `Olá, *${found[0].name}*! 👋 Que bom ter você de volta!\n\n` + msgMenuWithCategories(products, sizeOptions);
       }
       session.state = 'AWAIT_NAME';
-      return 'Olá! 👋 Seja bem-vindo(a) à *Pizzatec* 🍕\n\nQual é o seu nome?';
+      return `Olá! 👋 Seja bem-vindo(a) à *${businessName}*!\n\nQual é o seu nome?`;
     }
 
     /* ── REPEAT_OFFER ──────────────────────────────────────────── */
     case 'REPEAT_OFFER': {
       if (text === '1') {
-        const last = lastOrders.get(cleanPhone)!;
+        const last = lastOrders.get(key)!;
         session.cart  = last.map(p => ({ ...p }));
         session.state = 'CART_REVIEW';
-        return msgCartSummary(session.cart, deliveryFee, false);
+        return msgCartSummary(session.cart, deliveryFee, false, sizeOptions);
       }
-      session.state = 'SELECT_SIZE';
-      return msgSizeMenu();
+      session.state = 'SELECT_CAT';
+      return msgMenuWithCategories(products, sizeOptions);
     }
 
     /* ── AWAIT_NAME ────────────────────────────────────────────── */
@@ -296,9 +364,9 @@ export async function handleHardcodedMessage(phone: string, body: string): Promi
         session.customerId   = customer.id;
         session.customerName = session.tempName!;
         session.savedAddress = body.trim();
-        session.state        = 'SELECT_SIZE';
+        session.state        = 'SELECT_CAT';
         logger.info(`[Chatbot] Cliente CRIADO: id=${customer.id}, nome=${session.customerName}`);
-        return `✅ *Cadastro realizado, ${session.customerName}!* Vamos montar seu pedido:\n\n` + msgSizeMenu();
+        return `✅ *Cadastro realizado, ${session.customerName}!* Aqui está nosso cardápio:\n\n` + msgMenuWithCategories(products, sizeOptions);
       } catch (err: any) {
         logger.error(`[Chatbot Hardcoded] Erro ao criar cliente: ${err.message}`);
         return '❌ Erro ao salvar cadastro. Tente novamente.';
@@ -307,48 +375,55 @@ export async function handleHardcodedMessage(phone: string, body: string): Promi
 
     /* ── SELECT_SIZE ───────────────────────────────────────────── */
     case 'SELECT_SIZE': {
-      const sizeMap: Record<string, PizzaSize> = {
-        '1': 'normal', '2': 'brotinho',
-      };
-      const size = sizeMap[text];
-      if (!size) return '⚠️ Escolha o tamanho:\n\n' + msgSizeMenu();
-
-      session.builder = { size, maxFlavors: 1, flavorStep: 1 };
-
-      if (size === 'brotinho') {
-        // Brotinho: sempre 1 sabor, vai direto para categoria
-        session.state = 'SELECT_CAT';
-        return msgCategoryMenu(products, 1);
+      const b   = session.builder!;
+      const idx = parseInt(text, 10) - 1;
+      if (isNaN(idx) || idx < 0 || idx >= sizeKeys.length) {
+        return '⚠️ Escolha o tamanho:\n\n' + msgSizeMenu(sizeOptions);
       }
+      const sizeKey = sizeKeys[idx];
+      const sizeOpt = sizeOptions[sizeKey];
+      b.size       = sizeKey;
+      b.maxFlavors = sizeOpt.maxFlavors ?? 1;
 
-      session.state = 'SELECT_SPLIT';
-      return (
-        `*Pizza Normal* selecionada! 👍\n\n` +
-        `🍕 Como será?\n\n` +
-        `*1.* Sabor único\n` +
-        `*2.* Meio a meio (2 sabores)`
-      );
+      const confirmMsg = `📏 *${sizeOpt.label}* selecionado!\n\n`;
+
+      if (b.maxFlavors > 1) {
+        session.state = 'SELECT_SPLIT';
+        return confirmMsg + '🔀 *Deseja adicionar um 2º sabor?*\n\n*1.* Sim\n*2.* Não';
+      }
+      if (crustOptions.length > 0) {
+        session.state = 'SELECT_CRUST';
+        return confirmMsg + msgCrustMenu(crustOptions);
+      }
+      session.state = 'AWAIT_NOTES';
+      return confirmMsg + '📝 Alguma observação?\n\n_Digite ou *pular* para continuar._';
     }
 
     /* ── SELECT_SPLIT ──────────────────────────────────────────── */
     case 'SELECT_SPLIT': {
-      const b   = session.builder!;
-      const max = SIZE_MAX_FLAVORS[b.size];
+      const b = session.builder!;
 
       if (text === '1') {
-        b.maxFlavors = 1;
-      } else if (text === '2') {
-        b.maxFlavors = 2;
-      } else {
-        return '⚠️ Escolha *1* (sabor único) ou *2* (meio a meio).';
+        b.flavorStep = 2;
+        session.state = 'SELECT_CAT';
+        return msgCategoryMenu(products, 2);
       }
-
-      session.state = 'SELECT_CAT';
-      return msgCategoryMenu(products, 1);
+      if (text === '2') {
+        if (crustOptions.length > 0) {
+          session.state = 'SELECT_CRUST';
+          return msgCrustMenu(crustOptions);
+        }
+        session.state = 'AWAIT_NOTES';
+        return '📝 Alguma observação?\n\n_Digite ou *pular* para continuar._';
+      }
+      return '⚠️ Digite *1* para sim ou *2* para não.';
     }
 
     /* ── SELECT_CAT ────────────────────────────────────────────── */
     case 'SELECT_CAT': {
+      if (!session.builder) {
+        session.builder = { size: '', maxFlavors: 1, flavorStep: 1 };
+      }
       const b    = session.builder!;
       const cats = getCategories(products);
       const idx  = parseInt(text, 10) - 1;
@@ -376,46 +451,57 @@ export async function handleHardcodedMessage(phone: string, body: string): Promi
       }
 
       const chosen = items[idx];
-
-      if (b.flavorStep === 1) b.product1 = chosen;
-      else                    b.product2 = chosen;
-
       const confirmMsg = `✅ *${chosen.name}* escolhido!\n\n`;
 
-      // Próximo sabor?
-      if (b.flavorStep < b.maxFlavors) {
-        b.flavorStep = (b.flavorStep + 1) as 1 | 2;
-        session.state = 'SELECT_CAT';
-        return confirmMsg + msgCategoryMenu(products, b.flavorStep);
+      if (b.flavorStep === 1) {
+        b.product1 = chosen;
+        if (sizeKeys.length > 1) {
+          // Múltiplos tamanhos: perguntar ao cliente
+          session.state = 'SELECT_SIZE';
+          return confirmMsg + msgSizeMenu(sizeOptions);
+        }
+        // 0 ou 1 tamanho: auto-selecionar sem perguntar
+        b.size       = sizeKeys[0] ?? '';
+        b.maxFlavors = sizeKeys.length === 1 ? (sizeOptions[sizeKeys[0]].maxFlavors ?? 1) : 1;
+        if (b.maxFlavors > 1) {
+          session.state = 'SELECT_SPLIT';
+          return confirmMsg + '🔀 *Deseja adicionar um 2º sabor?*\n\n*1.* Sim\n*2.* Não';
+        }
+      } else {
+        // flavorStep === 2: segundo sabor
+        b.product2 = chosen;
       }
 
-      // Todos os sabores escolhidos → borda
-      session.state = 'SELECT_CRUST';
-      return confirmMsg + msgCrustMenu();
+      if (crustOptions.length > 0) {
+        session.state = 'SELECT_CRUST';
+        return confirmMsg + msgCrustMenu(crustOptions);
+      }
+      session.state = 'AWAIT_NOTES';
+      return confirmMsg + '📝 Alguma observação?\n\n_Digite ou *pular* para continuar._';
     }
 
     /* ── SELECT_CRUST ──────────────────────────────────────────── */
     case 'SELECT_CRUST': {
       const b      = session.builder!;
-      const noIdx  = CRUST_OPTIONS.length + 1;
+      const noIdx  = crustOptions.length + 1;
       const choice = parseInt(text, 10);
 
       let crust: string | undefined;
       let crustPrice = 0;
 
-      if (choice >= 1 && choice <= CRUST_OPTIONS.length) {
-        crust      = CRUST_OPTIONS[choice - 1].label;
-        crustPrice = CRUST_OPTIONS[choice - 1].price;
+      if (choice >= 1 && choice <= crustOptions.length) {
+        crust      = crustOptions[choice - 1].label;
+        crustPrice = crustOptions[choice - 1].price;
       } else if (choice === noIdx) {
         // sem borda
       } else {
-        return '⚠️ Opção inválida.\n\n' + msgCrustMenu();
+        return '⚠️ Opção inválida.\n\n' + msgCrustMenu(crustOptions);
       }
 
       b.crust = crust;
       session.state = 'AWAIT_NOTES';
       return (
-        (crust ? `✅ *Borda ${crust}* adicionada!\n\n` : '') +
+        (crust ? `✅ *${crust}* adicionado!\n\n` : '') +
         '📝 Alguma observação? (ex: sem cebola, bem passada...)\n\n' +
         '_Digite a observação ou *pular* para continuar._'
       );
@@ -428,9 +514,9 @@ export async function handleHardcodedMessage(phone: string, body: string): Promi
 
       const p1Price    = parseFloat(b.product1!.price);
       const p2Price    = b.product2 ? parseFloat(b.product2.price) : 0;
-      const crustOpt   = b.crust ? CRUST_OPTIONS.find(c => c.label === b.crust) : undefined;
+      const crustOpt   = b.crust ? crustOptions.find((c: CrustOption) => c.label === b.crust) : undefined;
       const crustPrice = crustOpt?.price ?? 0;
-      const unitPrice  = calcPizzaPrice(b.size, p1Price, p2Price, crustPrice);
+      const unitPrice  = calcPizzaPrice(b.size, sizeOptions, p1Price, p2Price, crustPrice);
 
       const pizza: CartPizza = {
         size:         b.size,
@@ -447,19 +533,17 @@ export async function handleHardcodedMessage(phone: string, body: string): Promi
       session.cart.push(pizza);
       session.builder  = undefined;
       session.state    = 'CART_REVIEW';
-      return msgCartSummary(session.cart, deliveryFee, false);
+      return msgCartSummary(session.cart, deliveryFee, false, sizeOptions);
     }
 
     /* ── CART_REVIEW ───────────────────────────────────────────── */
     case 'CART_REVIEW': {
       if (text === '1') {
-        // Adicionar mais uma pizza
         session.builder = undefined;
-        session.state   = 'SELECT_SIZE';
-        return msgSizeMenu();
+        session.state   = 'SELECT_CAT';
+        return msgMenuWithCategories(products, sizeOptions);
       }
       if (text === '2') {
-        // Finalizar
         session.state = 'AWAIT_DELIVERY_CHOICE';
         let msg = '📍 *Forma de entrega:*\n\n';
         if (session.savedAddress) {
@@ -469,7 +553,7 @@ export async function handleHardcodedMessage(phone: string, body: string): Promi
         msg += `*${session.savedAddress ? '3' : '2'}.* Outro endereço`;
         return msg;
       }
-      return '⚠️ Digite *1* para adicionar outra pizza ou *2* para finalizar.';
+      return '⚠️ Digite *1* para adicionar outro item ou *2* para finalizar.';
     }
 
     /* ── AWAIT_DELIVERY_CHOICE ─────────────────────────────────── */
@@ -489,31 +573,33 @@ export async function handleHardcodedMessage(phone: string, body: string): Promi
         const opts = hasSaved ? '*1*, *2* ou *3*' : '*1* ou *2*';
         return `⚠️ Escolha ${opts}.`;
       }
-      return goToPayment(session, deliveryFee);
+      return goToPayment(session, deliveryFee, paymentMethods);
     }
 
     /* ── AWAIT_CUSTOM_ADDRESS ──────────────────────────────────── */
     case 'AWAIT_CUSTOM_ADDRESS': {
       if (body.trim().length < 5) return '⚠️ Por favor, informe o endereço completo (rua, número e bairro).';
       session.deliveryAddress = body.trim();
-      return goToPayment(session, deliveryFee);
+      return goToPayment(session, deliveryFee, paymentMethods);
     }
 
     /* ── AWAIT_PAYMENT ─────────────────────────────────────────── */
     case 'AWAIT_PAYMENT': {
-      const payMap: Record<string, string> = { '1': 'PIX', '2': 'CREDIT', '3': 'CASH' };
-      const payment = payMap[text];
-      if (!payment) return '⚠️ Escolha: *1* (PIX) · *2* (Cartão na entrega) · *3* (Dinheiro)';
+      const idx = parseInt(text, 10) - 1;
+      if (isNaN(idx) || idx < 0 || idx >= paymentMethods.length) {
+        return '⚠️ Escolha:\n' + msgPaymentMenu(paymentMethods);
+      }
 
-      session.paymentMethod = payment;
+      const chosen = paymentMethods[idx];
+      session.paymentMethod = chosen.key;
 
-      if (payment === 'CASH') {
+      if (chosen.key === 'CASH') {
         session.state = 'AWAIT_TROCO';
         return '💵 Precisa de troco? Se sim, para quanto? (ex: *50*)  Se não, digite *não*.';
       }
 
       session.state = 'CONFIRMING';
-      return buildConfirmation(session, deliveryFee);
+      return buildConfirmation(session, deliveryFee, sizeOptions, paymentMethods);
     }
 
     /* ── AWAIT_TROCO ───────────────────────────────────────────── */
@@ -523,7 +609,7 @@ export async function handleHardcodedMessage(phone: string, body: string): Promi
         if (!isNaN(val) && val > 0) session.troco = val;
       }
       session.state = 'CONFIRMING';
-      return buildConfirmation(session, deliveryFee);
+      return buildConfirmation(session, deliveryFee, sizeOptions, paymentMethods);
     }
 
     /* ── CONFIRMING ────────────────────────────────────────────── */
@@ -533,7 +619,7 @@ export async function handleHardcodedMessage(phone: string, body: string): Promi
           const isPickup     = session.deliveryAddress === 'RETIRADA NO LOCAL';
           const fee          = isPickup ? 0 : deliveryFee;
           const totalCrust   = session.cart.reduce((s, p) => s + p.crustPrice, 0);
-          const totalFee     = fee + totalCrust; // borda somada à taxa
+          const totalFee     = fee + totalCrust;
 
           const items: CreateOrderItemDTO[] = session.cart.map(pizza => ({
             productId:     pizza.product1Id,
@@ -544,20 +630,18 @@ export async function handleHardcodedMessage(phone: string, body: string): Promi
 
           const noteParts: string[] = [];
           session.cart.forEach((pizza, i) => {
-            if (pizza.pizzaNotes) noteParts.push(`Pizza ${i + 1} — obs: ${pizza.pizzaNotes}`);
-            if (pizza.crust)      noteParts.push(`Pizza ${i + 1} — borda: ${pizza.crust}`);
+            if (pizza.pizzaNotes) noteParts.push(`Item ${i + 1} — obs: ${pizza.pizzaNotes}`);
+            if (pizza.crust)      noteParts.push(`Item ${i + 1} — adicional: ${pizza.crust}`);
           });
           if (session.troco) noteParts.push(`Troco para: ${brl(session.troco)}`);
           const notes = noteParts.join(' | ') || 'Pedido via WhatsApp';
 
-          const paymentLabels: Record<string, string> = {
-            PIX: 'PIX', CREDIT: 'Cartão', CASH: 'Dinheiro'
-          };
+          const payLabel = paymentMethods.find(pm => pm.key === session.paymentMethod)?.label ?? session.paymentMethod;
 
           const order = await createOrder({
             customerId:      session.customerId!,
             items,
-            paymentMethod:   paymentLabels[session.paymentMethod!] || session.paymentMethod,
+            paymentMethod:   payLabel,
             deliveryAddress: !isPickup ? session.deliveryAddress : undefined,
             deliveryFee:     totalFee,
             notes,
@@ -573,55 +657,58 @@ export async function handleHardcodedMessage(phone: string, body: string): Promi
             channel:      'whatsapp',
           });
 
-          // Salva para "repetir último pedido"
-          lastOrders.set(cleanPhone, session.cart.map(p => ({ ...p })));
-          sessions.delete(phone);
+          lastOrders.set(key, session.cart.map(p => ({ ...p })));
+          sessions.delete(key);
 
           return (
             `✅ *Pedido #${order.id} confirmado!*\n\n` +
             `🍕 Já estamos preparando! Obrigado, *${session.customerName}*! 😊❤️`
           );
         } catch (err: any) {
-          logger.error(`[Chatbot Hardcoded] Erro ao criar pedido: ${err.message}`);
+          logger.error(`[Chatbot Hardcoded] Erro ao criar pedido: ${err.message ?? err}`);
           return '❌ Erro ao registrar o pedido. Tente novamente ou ligue para nós.';
         }
       }
       if (/^(n[ãa]o|nao|no|cancelar)$/.test(text)) {
-        sessions.delete(phone);
+        sessions.delete(key);
         return '❌ Pedido cancelado. Quando quiser, é só chamar! 😊';
       }
       return 'Digite *sim* para confirmar ou *não* para cancelar.';
     }
 
     default:
-      sessions.delete(phone);
+      sessions.delete(key);
       return 'Olá! Para começar, é só mandar uma mensagem 😊';
   }
 }
 
 /* ─── Helpers internos ──────────────────────────────────────────── */
 
-function goToPayment(session: HSession, deliveryFee: number): string {
+function goToPayment(
+  session: HSession,
+  deliveryFee: number,
+  paymentMethods: PaymentOption[],
+): string {
   session.state     = 'AWAIT_PAYMENT';
   const isPickup    = session.deliveryAddress === 'RETIRADA NO LOCAL';
   const fee         = isPickup ? 0 : deliveryFee;
-  const totalCrust  = session.cart.reduce((s, p) => s + p.crustPrice, 0);
   const subtotal    = session.cart.reduce((s, p) => s + p.unitPrice, 0);
-  // unitPrice já inclui borda, então subtraímos para evitar dupla contagem no display
-  const displayFee  = fee; // borda já está em unitPrice de cada pizza
-  const grandTotal  = subtotal + displayFee;
+  const grandTotal  = subtotal + fee;
 
   return (
     `📍 ${isPickup ? 'Retirada no local' : session.deliveryAddress}\n` +
     (fee > 0 ? `🚚 Entrega: ${brl(fee)}\n` : '') +
     `💰 *Total: ${brl(grandTotal)}*\n\n` +
-    '💳 *Forma de pagamento:*\n*1.* PIX\n*2.* Cartão (levar maquininha)\n*3.* Dinheiro'
+    msgPaymentMenu(paymentMethods)
   );
 }
 
-const PAYMENT_LABELS: Record<string, string> = { PIX: 'PIX', CREDIT: 'Cartão na entrega', CASH: 'Dinheiro' };
-
-function buildConfirmation(session: HSession, deliveryFee: number): string {
+function buildConfirmation(
+  session: HSession,
+  deliveryFee: number,
+  sizeOptions: Record<string, SizeOption>,
+  paymentMethods: PaymentOption[],
+): string {
   const isPickup   = session.deliveryAddress === 'RETIRADA NO LOCAL';
   const fee        = isPickup ? 0 : deliveryFee;
   const subtotal   = session.cart.reduce((s, p) => s + p.unitPrice, 0);
@@ -632,8 +719,9 @@ function buildConfirmation(session: HSession, deliveryFee: number): string {
     const flavorsConf = pizza.product2Name
       ? `Meio ${pizza.product1Name} / Meio ${pizza.product2Name}`
       : pizza.product1Name;
-    msg += `*${i + 1}.* ${SIZE_LABELS[pizza.size]} — ${flavorsConf}`;
-    if (pizza.crust)      msg += ` | Borda ${pizza.crust}`;
+    const sizeLabel = sizeOptions[pizza.size]?.label ?? pizza.size;
+    msg += `*${i + 1}.* ${sizeLabel} — ${flavorsConf}`;
+    if (pizza.crust)      msg += ` | ${pizza.crust}`;
     if (pizza.pizzaNotes) msg += ` | _${pizza.pizzaNotes}_`;
     msg += `  ${brl(pizza.unitPrice)}\n`;
   });
@@ -641,7 +729,8 @@ function buildConfirmation(session: HSession, deliveryFee: number): string {
   if (fee > 0) msg += `🚚 Entrega: ${brl(fee)}\n`;
   msg += `💰 *TOTAL: ${brl(grandTotal)}*\n`;
   msg += `📍 ${isPickup ? 'Retirada no local' : session.deliveryAddress}\n`;
-  msg += `💳 ${PAYMENT_LABELS[session.paymentMethod!] || session.paymentMethod}`;
+  const payLabel = paymentMethods.find(pm => pm.key === session.paymentMethod)?.label ?? session.paymentMethod;
+  msg += `💳 ${payLabel}`;
   if (session.troco) msg += `\n💵 Troco para: ${brl(session.troco)}`;
   msg += '\n\nConfirmar? *sim* · *não*';
   return msg;

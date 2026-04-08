@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "axios": "^1.13.6",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",
@@ -18,10 +19,9 @@
     "express-validator": "^6.14.3",
     "jsonwebtoken": "^9.0.3",
     "mssql": "^9.1.1",
+    "pino": "^10.3.1",
     "qrcode": "^1.5.4",
-    "qrcode-terminal": "^0.12.0",
-    "uuid": "^9.0.0",
-    "whatsapp-web.js": "latest"
+    "uuid": "^9.0.0"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",

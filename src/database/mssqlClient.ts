@@ -10,7 +10,7 @@ const config: sql.config = {
   connectionTimeout: 60000,
   options: {
     encrypt: true,
-    trustServerCertificate: false,
+    trustServerCertificate: true,
     connectTimeout: 60000
   }
 };

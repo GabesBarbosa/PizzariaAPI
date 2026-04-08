@@ -1,24 +1,28 @@
 import { Request, Response, NextFunction } from 'express';
 import * as whatsappService from '../services/whatsapp.service';
 import { getAllCustomers } from '../repositories/customer.repository';
+import { getBusinessContext } from '../database/businessContext';
 
-export const restartWhatsApp = (_req: Request, res: Response) => {
-  whatsappService.restartWhatsApp();
+export const restartWhatsApp = async (_req: Request, res: Response) => {
+  const { businessId } = getBusinessContext()!;
+  await whatsappService.restartWhatsApp(businessId);
   res.json({ message: 'WhatsApp reiniciando... aguarde o novo QR Code.' });
 };
 
 export const getStatus = async (_req: Request, res: Response) => {
-  const status = await whatsappService.getStatus();
+  const { businessId } = getBusinessContext()!;
+  const status = await whatsappService.getStatus(businessId);
   res.json(status);
 };
 
 export const sendMessage = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const { businessId } = getBusinessContext()!;
     const { phone, message } = req.body;
     if (!phone || !message) {
       return res.status(400).json({ error: 'phone e message são obrigatórios' });
     }
-    const result = await whatsappService.sendTextMessage(phone, message);
+    const result = await whatsappService.sendTextMessage(businessId, phone, message);
     res.json({ success: true, result });
   } catch (err: any) {
     if (err.message?.includes('não está conectado')) {
@@ -30,11 +34,12 @@ export const sendMessage = async (req: Request, res: Response, next: NextFunctio
 
 export const sendBulk = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const { businessId } = getBusinessContext()!;
     const { phones, message } = req.body;
     if (!phones?.length || !message) {
       return res.status(400).json({ error: 'phones (array) e message são obrigatórios' });
     }
-    const result = await whatsappService.sendBulkMessages(phones, message);
+    const result = await whatsappService.sendBulkMessages(businessId, phones, message);
     res.json(result);
   } catch (err: any) {
     if (err.message?.includes('não está conectado')) {
@@ -46,6 +51,7 @@ export const sendBulk = async (req: Request, res: Response, next: NextFunction) 
 
 export const sendToAllCustomers = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const { businessId } = getBusinessContext()!;
     const { message } = req.body;
     if (!message) {
       return res.status(400).json({ error: 'message é obrigatório' });
@@ -55,7 +61,7 @@ export const sendToAllCustomers = async (req: Request, res: Response, next: Next
     if (phones.length === 0) {
       return res.status(400).json({ error: 'Nenhum cliente com telefone cadastrado' });
     }
-    const result = await whatsappService.sendBulkMessages(phones, message);
+    const result = await whatsappService.sendBulkMessages(businessId, phones, message);
     res.json({ totalCustomers: phones.length, ...result });
   } catch (err: any) {
     if (err.message?.includes('não está conectado')) {

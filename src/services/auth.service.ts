@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import * as authRepo from '../repositories/auth.repository';
+import { setSettingForBusiness } from '../repositories/settings.repository';
 import { LoginDTO, RegisterDTO } from '../dtos/auth.dto';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'restaurant-secret-change-me';
@@ -57,6 +58,10 @@ export const register = async (data: RegisterDTO) => {
 
   const businessSlug = await generateSlug(data.businessName);
   const business = await authRepo.createBusiness(data.businessName, businessSlug);
+
+  if (data.businessType) {
+    await setSettingForBusiness(business.id, 'businessType', data.businessType);
+  }
 
   const passwordHash = await bcrypt.hash(data.password, 10);
   const user = await authRepo.createUser(business.id, data.name, data.email, passwordHash);
