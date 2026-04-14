@@ -1,12 +1,42 @@
 import sql from 'mssql';
 
-const connectionString = process.env.DATABASE_URL || '';
+function parseConnectionString(cs: string): sql.config {
+  const parts: Record<string, string> = {};
+  cs.split(';').forEach(pair => {
+    const idx = pair.indexOf('=');
+    if (idx === -1) return;
+    const key = pair.slice(0, idx).trim().toLowerCase();
+    const val = pair.slice(idx + 1).trim();
+    parts[key] = val;
+  });
+
+  const server = parts['server'] || parts['data source'] || '';
+  // strip "tcp:" prefix and extract host/port
+  const serverClean = server.replace(/^tcp:/i, '');
+  const [host, portStr] = serverClean.split(',');
+
+  return {
+    server: host.trim(),
+    port: portStr ? parseInt(portStr.trim(), 10) : 1433,
+    user: parts['user id'] || parts['uid'] || '',
+    password: parts['password'] || parts['pwd'] || '',
+    database: parts['database'] || parts['initial catalog'] || '',
+    requestTimeout: 60000,
+    connectionTimeout: 60000,
+    options: {
+      encrypt: (parts['encrypt'] || 'true').toLowerCase() !== 'false',
+      trustServerCertificate: (parts['trustservercertificate'] || 'false').toLowerCase() === 'true',
+    },
+  };
+}
+
+const config = parseConnectionString(process.env.DATABASE_URL || '');
 
 let poolPromise: Promise<sql.ConnectionPool> | null = null;
 
 export const getPool = async (): Promise<sql.ConnectionPool> => {
   if (!poolPromise) {
-    const pool = new sql.ConnectionPool(connectionString);
+    const pool = new sql.ConnectionPool(config);
     poolPromise = pool.connect().then(() => pool).catch((err: any) => {
       poolPromise = null;
       const e: any = new Error('Failed to connect to database');
