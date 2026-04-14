@@ -30,7 +30,9 @@ function parseConnectionString(cs: string): sql.config {
   };
 }
 
-const config = parseConnectionString(process.env.DATABASE_URL || '');
+const rawUrl = process.env.DATABASE_URL || '';
+console.log('[DB] DATABASE_URL present:', rawUrl.length > 0, '| server:', rawUrl.split(';').find(p => /^server=/i.test(p.trim())) || 'NOT FOUND');
+const config = parseConnectionString(rawUrl);
 
 let poolPromise: Promise<sql.ConnectionPool> | null = null;
 
