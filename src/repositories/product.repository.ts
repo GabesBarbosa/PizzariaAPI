@@ -37,10 +37,11 @@ export const createProduct = async (data: CreateProductDTO) => {
   req.input('description', sql.NVarChar(1000), data.description || null);
   req.input('price', sql.Decimal(10, 2), data.price);
   req.input('category', sql.NVarChar(50), data.category || 'geral');
+  req.input('imageBase64', sql.NVarChar(sql.MAX), data.imageBase64 ?? null);
   const res = await req.query(
-    `INSERT INTO Products (id, businessId, name, description, price, category)
+    `INSERT INTO Products (id, businessId, name, description, price, category, imageBase64)
      OUTPUT inserted.*
-     VALUES (@id, @businessId, @name, @description, @price, @category)`
+     VALUES (@id, @businessId, @name, @description, @price, @category, @imageBase64)`
   );
   return res.recordset[0];
 };
@@ -55,12 +56,15 @@ export const updateProduct = async (id: string, data: UpdateProductDTO) => {
   req.input('description', sql.NVarChar(1000), data.description ?? null);
   req.input('price', sql.Decimal(10, 2), data.price || null);
   req.input('category', sql.NVarChar(50), data.category || null);
+  req.input('imageBase64', sql.NVarChar(sql.MAX), data.imageBase64 !== undefined ? (data.imageBase64 ?? null) : undefined as any);
+  const hasImage = data.imageBase64 !== undefined;
   const res = await req.query(
     `UPDATE Products SET
        name = COALESCE(@name, name),
        description = @description,
        price = COALESCE(@price, price),
        category = COALESCE(@category, category)
+       ${hasImage ? ', imageBase64 = @imageBase64' : ''}
      OUTPUT inserted.*
      WHERE id = @id AND businessId = @businessId`
   );

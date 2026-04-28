@@ -11,5 +11,9 @@ router.put('/crust-options',     settingsCtrl.updateCrustOptions);
 router.put('/size-options',      settingsCtrl.updateSizeOptions);
 router.put('/payment-methods',   settingsCtrl.updatePaymentMethods);
 router.put('/chatbot-enabled',   settingsCtrl.updateChatbotEnabled);
+router.get('/business-origin',   settingsCtrl.getOrigin);
+router.put('/business-origin',   settingsCtrl.updateOrigin);
+router.get('/delivery-zones',    settingsCtrl.getZones);
+router.put('/delivery-zones',    settingsCtrl.updateZones);
 
 export default router;

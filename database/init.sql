@@ -37,12 +37,21 @@ CREATE TABLE Users (
 -- ========================
 IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'Customers')
 CREATE TABLE Customers (
-  id         UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
-  businessId UNIQUEIDENTIFIER NOT NULL REFERENCES Businesses(id),
-  name       NVARCHAR(200) NOT NULL,
-  phone      NVARCHAR(50) NOT NULL,
-  address    NVARCHAR(500) NULL,
-  createdAt  DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+  id           UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
+  businessId   UNIQUEIDENTIFIER NOT NULL REFERENCES Businesses(id),
+  name         NVARCHAR(200) NOT NULL,
+  phone        NVARCHAR(50) NOT NULL,
+  address      NVARCHAR(500) NULL,
+  cep          NVARCHAR(9) NULL,
+  street       NVARCHAR(200) NULL,
+  number       NVARCHAR(20) NULL,
+  complement   NVARCHAR(200) NULL,
+  neighborhood NVARCHAR(200) NULL,
+  city         NVARCHAR(100) NULL,
+  uf           NVARCHAR(2) NULL,
+  latitude     DECIMAL(9,6) NULL,
+  longitude    DECIMAL(9,6) NULL,
+  createdAt    DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
   CONSTRAINT UQ_Customers_business_phone UNIQUE (businessId, phone)
 );
 

@@ -290,3 +290,96 @@ export const getChatbotConfig = async (): Promise<ChatbotConfig> => {
   ]);
   return { businessName, crustOptions, sizeOptions, paymentMethods };
 };
+
+/* ─── Origem do estabelecimento (endereço + coordenadas) ─── */
+
+export interface BusinessOrigin {
+  cep: string;
+  street: string;
+  number: string;
+  complement?: string;
+  neighborhood: string;
+  city: string;
+  uf: string;
+  latitude: number;
+  longitude: number;
+}
+
+export const getBusinessOrigin = async (): Promise<BusinessOrigin | null> => {
+  try {
+    const v = await getSetting('businessOrigin');
+    if (!v) return null;
+    return JSON.parse(v) as BusinessOrigin;
+  } catch {
+    return null;
+  }
+};
+
+export const setBusinessOrigin = async (origin: BusinessOrigin): Promise<void> => {
+  await setSetting('businessOrigin', JSON.stringify(origin));
+};
+
+/* ─── Faixas de frete por km (modelo iFood) ─── */
+
+export interface DeliveryZone {
+  minKm: number;  // inclusive
+  maxKm: number;  // exclusive (Infinity = sem teto)
+  fee: number;
+}
+
+const DEFAULT_DELIVERY_ZONES: DeliveryZone[] = [
+  { minKm: 0, maxKm: 3,  fee: 5 },
+  { minKm: 3, maxKm: 6,  fee: 8 },
+  { minKm: 6, maxKm: 10, fee: 12 },
+];
+
+export const getDeliveryZones = async (): Promise<DeliveryZone[]> => {
+  try {
+    const v = await getSetting('deliveryZones');
+    if (!v) return DEFAULT_DELIVERY_ZONES;
+    const parsed = JSON.parse(v) as DeliveryZone[];
+    return parsed.sort((a, b) => a.minKm - b.minKm);
+  } catch {
+    return DEFAULT_DELIVERY_ZONES;
+  }
+};
+
+export const setDeliveryZones = async (zones: DeliveryZone[]): Promise<void> => {
+  await setSetting('deliveryZones', JSON.stringify(zones));
+};
+
+/* ─── Resolução de business por slug (para rotas públicas) ─── */
+
+export interface PublicBusinessInfo {
+  id: string;
+  name: string;
+  slug: string;
+  active: boolean;
+}
+
+export const findBusinessBySlug = async (slug: string): Promise<PublicBusinessInfo | null> => {
+  try {
+    const conn = await getPool();
+    const result = await conn.request()
+      .input('slug', sql.NVarChar(100), slug)
+      .query('SELECT id, name, slug, active FROM Businesses WHERE slug = @slug AND active = 1');
+    return result.recordset[0] ?? null;
+  } catch (err: any) {
+    logger.warn(`[Settings] findBusinessBySlug falhou: ${err.message}`);
+    return null;
+  }
+};
+
+export const getCurrentBusinessInfo = async (): Promise<PublicBusinessInfo | null> => {
+  const { businessId } = getBusinessContext()!;
+  try {
+    const conn = await getPool();
+    const result = await conn.request()
+      .input('id', sql.UniqueIdentifier, businessId)
+      .query('SELECT id, name, slug, active FROM Businesses WHERE id = @id');
+    return result.recordset[0] ?? null;
+  } catch (err: any) {
+    logger.warn(`[Settings] getCurrentBusinessInfo falhou: ${err.message}`);
+    return null;
+  }
+};

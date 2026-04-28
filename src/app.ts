@@ -9,11 +9,12 @@ import whatsappRoutes from './routes/whatsapp.routes';
 import healthRoutes from './routes/health.routes';
 import notificationRoutes from './routes/notification.routes';
 import settingsRoutes from './routes/settings.routes';
+import publicRoutes from './routes/public.routes';
 import errorHandler from './middlewares/errorHandler';
 import { authMiddleware } from './middlewares/auth.middleware';
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 const allowedOrigins = [
   'http://localhost:4200',
@@ -26,6 +27,7 @@ app.use(cors({ origin: allowedOrigins }));
 
 // Public routes (no auth required)
 app.use('/api/auth', authRoutes);
+app.use('/api/public', publicRoutes);
 app.use('/health', healthRoutes);
 
 // Protected routes (require JWT + tenant context)

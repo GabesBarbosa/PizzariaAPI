@@ -3,6 +3,7 @@ export interface CreateProductDTO {
   description?: string;
   price: number;
   category?: string;
+  imageBase64?: string | null;
 }
 
 export interface UpdateProductDTO {
@@ -10,6 +11,7 @@ export interface UpdateProductDTO {
   description?: string;
   price?: number;
   category?: string;
+  imageBase64?: string | null;
 }
 
 export interface CreateVariationDTO {

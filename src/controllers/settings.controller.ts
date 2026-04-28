@@ -11,11 +11,18 @@ import {
   setCrustOptions,
   setSizeOptions,
   setPaymentMethods,
+  getBusinessOrigin,
+  setBusinessOrigin,
+  getDeliveryZones,
+  setDeliveryZones,
   type CrustOption,
   type SizeOption,
   type PaymentOption,
   type BusinessType,
+  type BusinessOrigin,
+  type DeliveryZone,
 } from '../repositories/settings.repository';
+import { geocodeAddress, lookupCep } from '../services/geocoding.service';
 
 export const getSettings = async (_req: Request, res: Response, next: NextFunction) => {
   try {
@@ -143,6 +150,114 @@ export const updatePaymentMethods = async (req: Request, res: Response, next: Ne
     }
     await setPaymentMethods(paymentMethods as PaymentOption[]);
     res.json({ paymentMethods });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/* ─── Origem do estabelecimento (endereço + geocoding) ─── */
+
+export const getOrigin = async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const origin = await getBusinessOrigin();
+    res.json({ origin });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const updateOrigin = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { cep, street, number, complement, neighborhood, city, uf, latitude, longitude } = req.body ?? {};
+    if (!cep || !number) {
+      res.status(400).json({ message: 'CEP e número são obrigatórios.' });
+      return;
+    }
+
+    let resolvedStreet = street;
+    let resolvedNeighborhood = neighborhood;
+    let resolvedCity = city;
+    let resolvedUf = uf;
+
+    if (!resolvedStreet || !resolvedCity || !resolvedUf) {
+      const cepInfo = await lookupCep(cep);
+      if (!cepInfo) {
+        res.status(400).json({ message: 'CEP não localizado.' });
+        return;
+      }
+      resolvedStreet       ||= cepInfo.street;
+      resolvedNeighborhood ||= cepInfo.neighborhood;
+      resolvedCity         ||= cepInfo.city;
+      resolvedUf           ||= cepInfo.uf;
+    }
+
+    let lat = typeof latitude === 'number' ? latitude : null;
+    let lng = typeof longitude === 'number' ? longitude : null;
+
+    if (lat === null || lng === null) {
+      const geo = await geocodeAddress({
+        cep,
+        street: resolvedStreet,
+        number,
+        neighborhood: resolvedNeighborhood,
+        city: resolvedCity,
+        uf: resolvedUf,
+      });
+      if (!geo) {
+        res.status(400).json({ message: 'Não foi possível geocodar o endereço informado.' });
+        return;
+      }
+      lat = geo.latitude;
+      lng = geo.longitude;
+    }
+
+    const origin: BusinessOrigin = {
+      cep,
+      street: resolvedStreet,
+      number,
+      complement: complement || undefined,
+      neighborhood: resolvedNeighborhood || '',
+      city: resolvedCity,
+      uf: resolvedUf,
+      latitude: lat,
+      longitude: lng,
+    };
+
+    await setBusinessOrigin(origin);
+    res.json({ origin });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/* ─── Faixas de entrega ─── */
+
+export const getZones = async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const zones = await getDeliveryZones();
+    res.json({ zones });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const updateZones = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { zones } = req.body ?? {};
+    if (!Array.isArray(zones) || zones.length === 0) {
+      res.status(400).json({ message: 'zones deve ser um array de { minKm, maxKm, fee }.' });
+      return;
+    }
+    for (const z of zones) {
+      if (typeof z.minKm !== 'number' || typeof z.maxKm !== 'number' || typeof z.fee !== 'number' ||
+          z.minKm < 0 || z.maxKm <= z.minKm || z.fee < 0) {
+        res.status(400).json({ message: 'Cada faixa precisa de minKm ≥ 0, maxKm > minKm e fee ≥ 0.' });
+        return;
+      }
+    }
+    const sorted = [...(zones as DeliveryZone[])].sort((a, b) => a.minKm - b.minKm);
+    await setDeliveryZones(sorted);
+    res.json({ zones: sorted });
   } catch (err) {
     next(err);
   }

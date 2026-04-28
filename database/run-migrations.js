@@ -143,6 +143,29 @@ async function run() {
   }
   console.log('[3/3] Migration OK: Orders.id INT IDENTITY + FK');
 
+  // migrate-customer-address: structured address fields on Customers
+  const customerAddressColumns = [
+    { name: 'cep',          ddl: 'NVARCHAR(9) NULL' },
+    { name: 'street',       ddl: 'NVARCHAR(200) NULL' },
+    { name: 'number',       ddl: 'NVARCHAR(20) NULL' },
+    { name: 'complement',   ddl: 'NVARCHAR(200) NULL' },
+    { name: 'neighborhood', ddl: 'NVARCHAR(200) NULL' },
+    { name: 'city',         ddl: 'NVARCHAR(100) NULL' },
+    { name: 'uf',           ddl: 'NVARCHAR(2) NULL' },
+    { name: 'latitude',     ddl: 'DECIMAL(9,6) NULL' },
+    { name: 'longitude',    ddl: 'DECIMAL(9,6) NULL' },
+  ];
+  for (const col of customerAddressColumns) {
+    await pool.request().query(`
+      IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('Customers') AND name = '${col.name}'
+      )
+      ALTER TABLE Customers ADD [${col.name}] ${col.ddl}
+    `);
+  }
+  console.log('[4/4] Migration OK: structured address columns in Customers');
+
   await pool.close();
   console.log('\nAll migrations completed successfully!');
 }
