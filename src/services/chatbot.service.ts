@@ -57,10 +57,12 @@ export async function handleMessage(rawPhone: string, _body: string): Promise<st
   if (!shouldGreet(ctx.businessId, phone)) return '';
 
   try {
+    logger.info(`[Chatbot] Buscando cliente — phone: "${phone}" businessId: "${ctx.businessId}"`);
     const [business, customer] = await Promise.all([
       getCurrentBusinessInfo(),
       customerRepo.findCustomerByPhone(phone).catch(() => null),
     ]);
+    logger.info(`[Chatbot] Cliente encontrado: ${customer ? customer.name : 'nenhum'}`);
 
     if (!business) {
       logger.warn(`[Chatbot] Business não encontrado para ${ctx.businessId}`);
