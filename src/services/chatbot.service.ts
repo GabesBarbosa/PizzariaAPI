@@ -1,6 +1,7 @@
 import * as customerRepo from '../repositories/customer.repository';
 import { getChatbotEnabled, getCurrentBusinessInfo } from '../repositories/settings.repository';
 import { getBusinessContext } from '../database/businessContext';
+import { createShopToken } from './shop-token.service';
 import logger from '../utils/logger';
 
 /* ─── Cooldown por (businessId, phone) para evitar spam de boas-vindas ─── */
@@ -35,9 +36,10 @@ function firstName(full: string): string {
 
 /* ─── URL do cardápio público ─── */
 
-function buildShopUrl(slug: string): string {
+function buildShopUrl(slug: string, token?: string): string {
   const base = (process.env.PUBLIC_SHOP_URL || 'https://nice-hill-08195f90f.7.azurestaticapps.net').replace(/\/$/, '');
-  return `${base}/c/${slug}`;
+  const url = `${base}/c/${slug}`;
+  return token ? `${url}?token=${token}` : url;
 }
 
 /* ─── Ponto de entrada (mantém assinatura antiga) ─── */
@@ -65,14 +67,15 @@ export async function handleMessage(rawPhone: string, _body: string): Promise<st
       return '';
     }
 
-    const link = buildShopUrl(business.slug);
-
     if (customer) {
-      return `Olá de volta, ${firstName(customer.name)}! 🍕\n\n` +
+      const token = createShopToken(ctx.businessId, phone);
+      const link = buildShopUrl(business.slug, token);
+      return `Olá de volta, ${firstName(customer.name)}! 🍴\n\n` +
         `Faça seu pedido direto por aqui:\n${link}`;
     }
 
-    return `Olá! Bem-vindo à *${business.name}* 🍕\n\n` +
+    const link = buildShopUrl(business.slug);
+    return `Olá! Bem-vindo à *${business.name}* 🍴\n\n` +
       `Monte seu pedido pelo nosso cardápio online:\n${link}\n\n` +
       `No primeiro pedido você faz um cadastro rápido e já é atendido!`;
   } catch (err: any) {

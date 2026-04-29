@@ -2,6 +2,7 @@ import { Response, NextFunction } from 'express';
 import * as productRepo from '../repositories/product.repository';
 import * as customerRepo from '../repositories/customer.repository';
 import { createOrder } from '../services/order.service';
+import { redeemShopToken } from '../services/shop-token.service';
 import { getPaymentMethods, getBusinessOrigin, getDeliveryZones } from '../repositories/settings.repository';
 import { getBusinessContext } from '../database/businessContext';
 import { getPool, sql } from '../database/mssqlClient';
@@ -122,6 +123,36 @@ export const postShipping = async (req: PublicRequest, res: Response, next: Next
     });
   } catch (err: any) {
     res.status(400).json({ message: err.message || 'Falha ao calcular o frete.' });
+  }
+};
+
+/* ─── GET /api/public/:slug/customers?token=... ─── */
+
+export const getCustomerByToken = async (req: PublicRequest, res: Response, next: NextFunction) => {
+  try {
+    const token = typeof req.query.token === 'string' ? req.query.token.trim() : '';
+    if (!token) return res.status(400).json({ message: 'Token é obrigatório.' });
+
+    const phone = redeemShopToken(token, req.business!.id);
+    if (!phone) return res.status(404).json({ message: 'Token inválido ou expirado.' });
+
+    const customer = await customerRepo.findCustomerByPhone(phone);
+    if (!customer) return res.status(404).json({ message: 'Cliente não encontrado.' });
+
+    res.json({
+      id: customer.id,
+      name: customer.name,
+      phone: customer.phone,
+      cep: customer.cep,
+      street: customer.street,
+      number: customer.number,
+      complement: customer.complement,
+      neighborhood: customer.neighborhood,
+      city: customer.city,
+      uf: customer.uf,
+    });
+  } catch (err) {
+    next(err);
   }
 };
 
