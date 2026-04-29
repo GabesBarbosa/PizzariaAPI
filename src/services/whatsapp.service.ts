@@ -118,8 +118,8 @@ export async function initWhatsApp(businessId: string): Promise<void> {
     socket.ev.on('contacts.upsert', (contacts) => {
       for (const contact of contacts) {
         if (contact.lid && contact.id) {
-          // lid: "21131272695827@lid" → id: "5511910731832@s.whatsapp.net"
           state.lidCache.set(contact.lid, contact.id);
+          logger.info(`[WhatsApp] LID mapeado (upsert): ${contact.lid} → ${contact.id}`);
         }
       }
     });
@@ -127,6 +127,7 @@ export async function initWhatsApp(businessId: string): Promise<void> {
       for (const upd of updates) {
         if (upd.lid && upd.id) {
           state.lidCache.set(upd.lid, upd.id);
+          logger.info(`[WhatsApp] LID mapeado (update): ${upd.lid} → ${upd.id}`);
         }
       }
     });
@@ -228,11 +229,16 @@ export async function initWhatsApp(businessId: string): Promise<void> {
           if (!body) continue;
 
           const replyJid = msg.key.remoteJid!;
-          // Resolve LID para JID real quando disponível no cache
           const normalizedJid = jidNormalizedUser(replyJid);
-          const resolvedJid   = normalizedJid.endsWith('@lid')
-            ? (state.lidCache.get(normalizedJid) ?? normalizedJid)
-            : normalizedJid;
+
+          let resolvedJid = normalizedJid;
+          if (normalizedJid.endsWith('@lid')) {
+            const fromCache = state.lidCache.get(normalizedJid);
+            const fromContacts = (state.socket as any)?.contacts?.[normalizedJid]?.id;
+            resolvedJid = fromCache ?? fromContacts ?? normalizedJid;
+            logger.info(`[WhatsApp] LID detectado: ${normalizedJid} | cache: ${fromCache ?? 'miss'} | contacts: ${fromContacts ?? 'miss'} | resolvido: ${resolvedJid}`);
+          }
+
           const phone = jidNormalizedUser(resolvedJid);
 
           const reply = await businessStorage.run(businessContext, () =>
