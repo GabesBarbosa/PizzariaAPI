@@ -227,13 +227,13 @@ export async function initWhatsApp(businessId: string): Promise<void> {
 
           if (!body) continue;
 
-          // replyJid: JID original do remetente — usado só para enviar a resposta.
-          // phone: identificador ESTÁVEL de sessão e cliente.
-          //   Sempre usa o replyJid normalizado SEM resolver LID,
-          //   garantindo que a mesma pessoa sempre tenha o mesmo phone
-          //   em todas as mensagens (msg.key.remoteJid não muda por usuário).
           const replyJid = msg.key.remoteJid!;
-          const phone    = jidNormalizedUser(replyJid);
+          // Resolve LID para JID real quando disponível no cache
+          const normalizedJid = jidNormalizedUser(replyJid);
+          const resolvedJid   = normalizedJid.endsWith('@lid')
+            ? (state.lidCache.get(normalizedJid) ?? normalizedJid)
+            : normalizedJid;
+          const phone = jidNormalizedUser(resolvedJid);
 
           const reply = await businessStorage.run(businessContext, () =>
             handleMessage(phone, body)
