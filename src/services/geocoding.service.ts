@@ -53,33 +53,42 @@ const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
 const USER_AGENT = process.env.NOMINATIM_USER_AGENT || 'PizzariaSPA/1.0 (contato@pizzaria.local)';
 
 export async function geocodeAddress(input: GeocodeInput): Promise<GeocodeResult | null> {
-  const parts = [
-    input.street && input.number ? `${input.street}, ${input.number}` : input.street,
-    input.neighborhood,
-    input.city,
-    input.uf,
-    input.cep,
-    'Brasil',
-  ].filter(Boolean);
+  const attempts = [
+    // 1. Endereço completo com número
+    [input.street && input.number ? `${input.street}, ${input.number}` : input.street, input.neighborhood, input.city, input.uf, 'Brasil'],
+    // 2. Sem número (Nominatim frequentemente não tem numeração)
+    [input.street, input.neighborhood, input.city, input.uf, 'Brasil'],
+    // 3. Só CEP + cidade
+    [input.cep, input.city, input.uf, 'Brasil'],
+    // 4. Só cidade + UF
+    [input.city, input.uf, 'Brasil'],
+  ];
 
-  const query = parts.join(', ');
+  for (const parts of attempts) {
+    const query = parts.filter(Boolean).join(', ');
+    if (!query) continue;
 
-  try {
-    const { data } = await axios.get(NOMINATIM_URL, {
-      params: { q: query, format: 'json', limit: 1, countrycodes: 'br' },
-      headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'pt-BR' },
-      timeout: 7000,
-    });
+    try {
+      const { data } = await axios.get(NOMINATIM_URL, {
+        params: { q: query, format: 'json', limit: 1, countrycodes: 'br' },
+        headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'pt-BR' },
+        timeout: 7000,
+      });
 
-    if (!Array.isArray(data) || data.length === 0) return null;
-
-    const lat = parseFloat(data[0].lat);
-    const lon = parseFloat(data[0].lon);
-    if (Number.isNaN(lat) || Number.isNaN(lon)) return null;
-
-    return { latitude: lat, longitude: lon };
-  } catch (err: any) {
-    logger.warn(`[Geocoding] Nominatim falhou para "${query}": ${err.message}`);
-    return null;
+      if (Array.isArray(data) && data.length > 0) {
+        const lat = parseFloat(data[0].lat);
+        const lon = parseFloat(data[0].lon);
+        if (!Number.isNaN(lat) && !Number.isNaN(lon)) {
+          if (parts !== attempts[0]) {
+            logger.info(`[Geocoding] Resolvido com fallback: "${query}"`);
+          }
+          return { latitude: lat, longitude: lon };
+        }
+      }
+    } catch (err: any) {
+      logger.warn(`[Geocoding] Nominatim falhou para "${query}": ${err.message}`);
+    }
   }
+
+  return null;
 }
