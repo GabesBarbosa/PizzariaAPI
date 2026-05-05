@@ -102,7 +102,7 @@ export const createOrder = async (data: CreateOrderDTO) => {
     const orderReq = new sql.Request(transaction as any);
     const orderInsert = await orderReq
       .input('businessId', sql.UniqueIdentifier, businessId)
-      .input('customerId', sql.UniqueIdentifier, data.customerId)
+      .input('customerId', sql.UniqueIdentifier, data.customerId ?? null)
       .input('total', sql.Decimal(12, 2), grandTotal)
       .input('paymentMethod', sql.NVarChar(50), data.paymentMethod || null)
       .input('deliveryAddress', sql.NVarChar(500), data.deliveryAddress || null)
@@ -275,7 +275,7 @@ export const updateOrder = async (orderId: number, data: CreateOrderDTO) => {
     await updReq
       .input('id', sql.Int, orderId)
       .input('businessId', sql.UniqueIdentifier, businessId)
-      .input('customerId', sql.UniqueIdentifier, data.customerId)
+      .input('customerId', sql.UniqueIdentifier, data.customerId ?? null)
       .input('total', sql.Decimal(12, 2), grandTotal)
       .input('paymentMethod', sql.NVarChar(50), data.paymentMethod || null)
       .input('deliveryAddress', sql.NVarChar(500), data.deliveryAddress || null)

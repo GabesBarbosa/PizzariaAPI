@@ -7,14 +7,18 @@ import logger from '../utils/logger';
 import { broadcast } from './notification.service';
 
 export const createOrder = async (data: CreateOrderDTO) => {
-  const customer = await customerRepo.findCustomerById(data.customerId);
-  if (!customer) throw new Error('Cliente não encontrado');
+  const customer = data.customerId
+    ? await customerRepo.findCustomerById(data.customerId)
+    : null;
+
+  if (data.customerId && !customer) throw new Error('Cliente não encontrado');
+
   const order = await orderRepo.createOrder(data);
 
   try {
     broadcast('new-order', {
       id: order.id,
-      customerName: customer.name,
+      customerName: customer?.name ?? (data.tableNumber ? `Mesa ${data.tableNumber}` : 'Cliente'),
       total: order.total,
       itemCount: order.items ? order.items.reduce((s: number, it: any) => s + it.quantity, 0) : 0,
       channel: data.channel || 'web',

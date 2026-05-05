@@ -211,7 +211,8 @@ export const postOrder = async (req: PublicRequest, res: Response, next: NextFun
   try {
     const { customerId, items, paymentMethod, changeFor, notes, deliveryFee, deliveryAddress, tableNumber } = req.body ?? {};
 
-    if (!customerId) return res.status(400).json({ message: 'customerId é obrigatório.' });
+    const isTableOrder = !!tableNumber;
+    if (!customerId && !isTableOrder) return res.status(400).json({ message: 'customerId é obrigatório.' });
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: 'Itens obrigatórios.' });
     }

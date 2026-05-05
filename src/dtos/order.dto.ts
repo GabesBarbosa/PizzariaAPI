@@ -11,7 +11,7 @@ export interface CreateOrderItemDTO {
 }
 
 export interface CreateOrderDTO {
-  customerId: string;
+  customerId: string | null;
   items: CreateOrderItemDTO[];
   paymentMethod?: string;
   deliveryAddress?: string;
