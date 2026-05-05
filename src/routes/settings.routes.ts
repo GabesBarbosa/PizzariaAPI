@@ -15,5 +15,7 @@ router.get('/business-origin',   settingsCtrl.getOrigin);
 router.put('/business-origin',   settingsCtrl.updateOrigin);
 router.get('/delivery-zones',    settingsCtrl.getZones);
 router.put('/delivery-zones',    settingsCtrl.updateZones);
+router.get('/tables',            settingsCtrl.getTables);
+router.put('/tables',            settingsCtrl.updateTables);
 
 export default router;

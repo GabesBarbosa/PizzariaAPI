@@ -348,6 +348,22 @@ export const setDeliveryZones = async (zones: DeliveryZone[]): Promise<void> => 
   await setSetting('deliveryZones', JSON.stringify(zones));
 };
 
+/* ─── Mesas (salão) ─── */
+
+export const getTableCount = async (): Promise<number> => {
+  try {
+    const v = await getSetting('tableCount');
+    const n = parseInt(v ?? '0', 10);
+    return isNaN(n) ? 0 : n;
+  } catch {
+    return 0;
+  }
+};
+
+export const setTableCount = async (count: number): Promise<void> => {
+  await setSetting('tableCount', count.toString());
+};
+
 /* ─── Resolução de business por slug (para rotas públicas) ─── */
 
 export interface PublicBusinessInfo {

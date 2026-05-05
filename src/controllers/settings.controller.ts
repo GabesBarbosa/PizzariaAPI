@@ -15,6 +15,8 @@ import {
   setBusinessOrigin,
   getDeliveryZones,
   setDeliveryZones,
+  getTableCount,
+  setTableCount,
   type CrustOption,
   type SizeOption,
   type PaymentOption,
@@ -236,6 +238,31 @@ export const getZones = async (_req: Request, res: Response, next: NextFunction)
   try {
     const zones = await getDeliveryZones();
     res.json({ zones });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/* ─── Mesas (salão) ─── */
+
+export const getTables = async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tableCount = await getTableCount();
+    res.json({ tableCount });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const updateTables = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const count = parseInt(req.body.tableCount, 10);
+    if (isNaN(count) || count < 0 || count > 200) {
+      res.status(400).json({ message: 'tableCount deve ser um número entre 0 e 200.' });
+      return;
+    }
+    await setTableCount(count);
+    res.json({ tableCount: count });
   } catch (err) {
     next(err);
   }

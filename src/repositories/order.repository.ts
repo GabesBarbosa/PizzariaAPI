@@ -109,10 +109,11 @@ export const createOrder = async (data: CreateOrderDTO) => {
       .input('notes', sql.NVarChar(1000), data.notes || null)
       .input('deliveryFee', sql.Decimal(10, 2), deliveryFee)
       .input('channel', sql.NVarChar(50), data.channel || 'balcao')
+      .input('tableNumber', sql.Int, data.tableNumber ?? null)
       .query(
-        `INSERT INTO Orders (businessId, customerId, total, status, paymentMethod, deliveryAddress, notes, deliveryFee, channel)
+        `INSERT INTO Orders (businessId, customerId, total, status, paymentMethod, deliveryAddress, notes, deliveryFee, channel, tableNumber)
          OUTPUT inserted.id
-         VALUES (@businessId, @customerId, @total, 'RECEIVED', @paymentMethod, @deliveryAddress, @notes, @deliveryFee, @channel)`
+         VALUES (@businessId, @customerId, @total, 'RECEIVED', @paymentMethod, @deliveryAddress, @notes, @deliveryFee, @channel, @tableNumber)`
       );
     const orderId: number = orderInsert.recordset[0].id;
 

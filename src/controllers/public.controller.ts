@@ -201,7 +201,7 @@ export const postCustomer = async (req: PublicRequest, res: Response, next: Next
 
 export const postOrder = async (req: PublicRequest, res: Response, next: NextFunction) => {
   try {
-    const { customerId, items, paymentMethod, changeFor, notes, deliveryFee, deliveryAddress } = req.body ?? {};
+    const { customerId, items, paymentMethod, changeFor, notes, deliveryFee, deliveryAddress, tableNumber } = req.body ?? {};
 
     if (!customerId) return res.status(400).json({ message: 'customerId é obrigatório.' });
     if (!Array.isArray(items) || items.length === 0) {
@@ -231,7 +231,8 @@ export const postOrder = async (req: PublicRequest, res: Response, next: NextFun
       deliveryAddress: deliveryAddress || undefined,
       deliveryFee: typeof deliveryFee === 'number' ? deliveryFee : 0,
       notes: orderNotes || undefined,
-      channel: 'web',
+      channel: tableNumber ? 'mesa' : 'web',
+      tableNumber: typeof tableNumber === 'number' ? tableNumber : undefined,
     });
 
     logger.info(`[Public] Pedido #${order!.id} criado via web (${req.business!.slug})`);

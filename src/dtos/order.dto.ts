@@ -18,4 +18,5 @@ export interface CreateOrderDTO {
   notes?: string;
   deliveryFee?: number;
   channel?: string;
+  tableNumber?: number;
 }

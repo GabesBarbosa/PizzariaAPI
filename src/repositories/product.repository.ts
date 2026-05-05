@@ -74,10 +74,14 @@ export const updateProduct = async (id: string, data: UpdateProductDTO) => {
 export const deleteProduct = async (id: string) => {
   const { businessId } = getBusinessContext()!;
   const pool = await getPool();
-  const req = pool.request();
-  req.input('id', sql.UniqueIdentifier, id);
-  req.input('businessId', sql.UniqueIdentifier, businessId);
-  await req.query('DELETE FROM Products WHERE id = @id AND businessId = @businessId');
+  // Desvincula pedidos existentes antes de deletar (preserva histórico)
+  await pool.request()
+    .input('id', sql.UniqueIdentifier, id)
+    .query('UPDATE OrderItems SET productId = NULL WHERE productId = @id');
+  await pool.request()
+    .input('id', sql.UniqueIdentifier, id)
+    .input('businessId', sql.UniqueIdentifier, businessId)
+    .query('DELETE FROM Products WHERE id = @id AND businessId = @businessId');
 };
 
 // ---- Variations ----
