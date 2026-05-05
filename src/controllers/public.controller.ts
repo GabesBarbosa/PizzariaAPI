@@ -160,21 +160,29 @@ export const getCustomerByToken = async (req: PublicRequest, res: Response, next
 
 export const postCustomer = async (req: PublicRequest, res: Response, next: NextFunction) => {
   try {
-    const { name, phone, cep, street, number, complement, neighborhood, city, uf, latitude, longitude } = req.body ?? {};
-    if (!name || typeof name !== 'string') {
-      return res.status(400).json({ message: 'Nome é obrigatório.' });
-    }
-    if (!phone || typeof phone !== 'string') {
+    const { name, phone, tableNumber: custTableNumber, cep, street, number, complement, neighborhood, city, uf, latitude, longitude } = req.body ?? {};
+
+    // Modo mesa: phone é opcional — usa identificador da mesa como chave
+    const isTableMode = !phone && custTableNumber;
+    const resolvedPhone = isTableMode
+      ? `mesa_${custTableNumber}`
+      : (phone && typeof phone === 'string' ? normalizePhone(phone) : null);
+
+    if (!resolvedPhone) {
       return res.status(400).json({ message: 'Telefone é obrigatório.' });
     }
+
+    const resolvedName = (name && typeof name === 'string' && name.trim())
+      ? name.trim()
+      : `Mesa ${custTableNumber}`;
 
     const address = [street, number].filter(Boolean).join(', ') +
       (neighborhood ? ` - ${neighborhood}` : '') +
       (city && uf ? `, ${city}/${uf}` : '');
 
     const customer = await customerRepo.upsertCustomerByPhone({
-      name: name.trim(),
-      phone: normalizePhone(phone),
+      name: resolvedName,
+      phone: resolvedPhone,
       address: address.trim() || undefined,
       cep, street, number, complement, neighborhood, city, uf,
       latitude, longitude,
