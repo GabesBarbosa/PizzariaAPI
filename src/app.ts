@@ -20,6 +20,7 @@ const allowedOrigins = [
   'http://localhost:4200',
   'https://nice-plant-0a66aee0f.2.azurestaticapps.net',
   'https://nice-hill-08195f90f.7.azurestaticapps.net',
+  'https://dashfood.vercel.app',
   process.env.SPA_ORIGIN
 ].filter(Boolean) as string[];
 
