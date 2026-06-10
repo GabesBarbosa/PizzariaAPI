@@ -5,7 +5,7 @@ import { createOrder } from '../services/order.service';
 import { redeemShopToken } from '../services/shop-token.service';
 import { getPaymentMethods, getBusinessOrigin, getDeliveryZones } from '../repositories/settings.repository';
 import { getBusinessContext } from '../database/businessContext';
-import { getPool, sql } from '../database/mssqlClient';
+import { getPool } from '../database/mysqlClient';
 import { lookupCep } from '../services/geocoding.service';
 import { quoteShipping } from '../services/delivery.service';
 import logger from '../utils/logger';
@@ -63,23 +63,22 @@ export const getMenu = async (_req: PublicRequest, res: Response, next: NextFunc
 export const getTopProducts = async (_req: PublicRequest, res: Response, next: NextFunction) => {
   try {
     const { businessId } = getBusinessContext()!;
-    const pool = await getPool();
-    const r = pool.request();
-    r.input('businessId', sql.UniqueIdentifier, businessId);
-    const result = await r.query(`
-      SELECT TOP 6
+    const pool = getPool();
+    const [rows] = await pool.query<any[]>(`
+      SELECT
         p.id, p.name, p.description, p.price, p.category, p.imageBase64,
         SUM(oi.quantity) AS totalSold
       FROM OrderItems oi
       INNER JOIN Orders o ON oi.orderId = o.id
       INNER JOIN Products p ON oi.productId = p.id
-      WHERE o.businessId = @businessId
-        AND o.createdAt >= DATEADD(DAY, -30, GETDATE())
+      WHERE o.businessId = ?
+        AND o.createdAt >= DATE_SUB(NOW(), INTERVAL 30 DAY)
         AND o.status NOT IN ('CANCELLED')
       GROUP BY p.id, p.name, p.description, p.price, p.category, p.imageBase64
       ORDER BY totalSold DESC
-    `);
-    res.json(result.recordset.map((p: any) => ({
+      LIMIT 6
+    `, [businessId]);
+    res.json(rows.map((p: any) => ({
       id: p.id,
       name: p.name,
       description: p.description,
