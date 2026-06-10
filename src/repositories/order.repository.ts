@@ -1,4 +1,5 @@
-import { getPool, sql } from '../database/mssqlClient';
+import mysql from 'mysql2/promise';
+import { getPool } from '../database/mysqlClient';
 import { getBusinessContext } from '../database/businessContext';
 import { CreateOrderDTO, CreateOrderItemDTO } from '../dtos/order.dto';
 import { v4 as uuidv4 } from 'uuid';
@@ -12,86 +13,56 @@ interface ItemWithPrice {
   variations: Array<{ variationId: string; priceModifier: number }>;
 }
 
-async function calcItemPrice(
-  transaction: any,
-  it: CreateOrderItemDTO
-): Promise<ItemWithPrice> {
-  const req1 = new sql.Request(transaction);
-  const r1 = await req1
-    .input('pid', sql.UniqueIdentifier, it.productId)
-    .query('SELECT price FROM Products WHERE id = @pid');
-  if (!r1.recordset[0]) throw new Error('Produto não encontrado: ' + it.productId);
+async function calcItemPrice(conn: mysql.PoolConnection, it: CreateOrderItemDTO): Promise<ItemWithPrice> {
+  const [r1] = await conn.query<any[]>('SELECT price FROM Products WHERE id = ?', [it.productId]);
+  if (!r1[0]) throw new Error('Produto não encontrado: ' + it.productId);
 
-  const unitPrice = parseFloat(r1.recordset[0].price);
+  const unitPrice = parseFloat(r1[0].price);
   let variationTotal = 0;
   const variationSnapshots: Array<{ variationId: string; priceModifier: number }> = [];
 
   if (it.variations?.length) {
     for (const v of it.variations) {
-      const vReq = new sql.Request(transaction);
-      const vRes = await vReq
-        .input('vid', sql.UniqueIdentifier, v.variationId)
-        .query('SELECT priceModifier FROM ProductVariations WHERE id = @vid');
-      if (!vRes.recordset[0]) throw new Error('Variação não encontrada: ' + v.variationId);
-      const modifier = parseFloat(vRes.recordset[0].priceModifier);
+      const [vRes] = await conn.query<any[]>(
+        'SELECT priceModifier FROM ProductVariations WHERE id = ?', [v.variationId]
+      );
+      if (!vRes[0]) throw new Error('Variação não encontrada: ' + v.variationId);
+      const modifier = parseFloat(vRes[0].priceModifier);
       variationTotal += modifier;
       variationSnapshots.push({ variationId: v.variationId, priceModifier: modifier });
     }
   }
 
   const finalPrice = Math.round((unitPrice + variationTotal) * 100) / 100;
-
-  return {
-    id: uuidv4(),
-    productId: it.productId,
-    quantity: it.quantity,
-    unitPrice,
-    finalPrice,
-    variations: variationSnapshots
-  };
+  return { id: uuidv4(), productId: it.productId, quantity: it.quantity, unitPrice, finalPrice, variations: variationSnapshots };
 }
 
-async function insertItems(transaction: any, orderId: number, items: ItemWithPrice[]) {
+async function insertItems(conn: mysql.PoolConnection, orderId: number, items: ItemWithPrice[]) {
   for (const it of items) {
-    const req = new sql.Request(transaction);
-    await req
-      .input('iid', sql.UniqueIdentifier, it.id)
-      .input('oid', sql.Int, orderId)
-      .input('pid', sql.UniqueIdentifier, it.productId)
-      .input('quantity', sql.Int, it.quantity)
-      .input('unitPrice', sql.Decimal(10, 2), it.unitPrice)
-      .input('finalPrice', sql.Decimal(10, 2), it.finalPrice)
-      .query(
-        `INSERT INTO OrderItems (id, orderId, productId, quantity, unitPrice, finalPrice)
-         VALUES (@iid, @oid, @pid, @quantity, @unitPrice, @finalPrice)`
-      );
-
+    await conn.query(
+      'INSERT INTO OrderItems (id, orderId, productId, quantity, unitPrice, finalPrice) VALUES (?, ?, ?, ?, ?, ?)',
+      [it.id, orderId, it.productId, it.quantity, it.unitPrice, it.finalPrice]
+    );
     for (const v of it.variations) {
-      const vReq = new sql.Request(transaction);
-      await vReq
-        .input('id', sql.UniqueIdentifier, uuidv4())
-        .input('orderItemId', sql.UniqueIdentifier, it.id)
-        .input('variationId', sql.UniqueIdentifier, v.variationId)
-        .input('priceModifier', sql.Decimal(10, 2), v.priceModifier)
-        .query(
-          `INSERT INTO OrderItemVariations (id, orderItemId, variationId, priceModifier)
-           VALUES (@id, @orderItemId, @variationId, @priceModifier)`
-        );
+      await conn.query(
+        'INSERT INTO OrderItemVariations (id, orderItemId, variationId, priceModifier) VALUES (?, ?, ?, ?)',
+        [uuidv4(), it.id, v.variationId, v.priceModifier]
+      );
     }
   }
 }
 
 export const createOrder = async (data: CreateOrderDTO) => {
   const { businessId } = getBusinessContext()!;
-  const connection = await getPool();
-  const transaction = new sql.Transaction(connection);
+  const pool = getPool();
+  const conn = await pool.getConnection();
   try {
-    await transaction.begin();
+    await conn.beginTransaction();
 
     let itemsTotal = 0;
     const itemsWithPrice: ItemWithPrice[] = [];
     for (const it of data.items) {
-      const item = await calcItemPrice(transaction, it);
+      const item = await calcItemPrice(conn, it);
       itemsWithPrice.push(item);
       itemsTotal += item.finalPrice * it.quantity;
     }
@@ -99,171 +70,147 @@ export const createOrder = async (data: CreateOrderDTO) => {
     const deliveryFee = data.deliveryFee || 0;
     const grandTotal = Math.round((itemsTotal + deliveryFee) * 100) / 100;
 
-    const orderReq = new sql.Request(transaction as any);
-    const orderInsert = await orderReq
-      .input('businessId', sql.UniqueIdentifier, businessId)
-      .input('customerId', sql.UniqueIdentifier, data.customerId ?? null)
-      .input('total', sql.Decimal(12, 2), grandTotal)
-      .input('paymentMethod', sql.NVarChar(50), data.paymentMethod || null)
-      .input('deliveryAddress', sql.NVarChar(500), data.deliveryAddress || null)
-      .input('notes', sql.NVarChar(1000), data.notes || null)
-      .input('deliveryFee', sql.Decimal(10, 2), deliveryFee)
-      .input('channel', sql.NVarChar(50), data.channel || 'balcao')
-      .input('tableNumber', sql.Int, data.tableNumber ?? null)
-      .query(
-        `INSERT INTO Orders (businessId, customerId, total, status, paymentMethod, deliveryAddress, notes, deliveryFee, channel, tableNumber)
-         OUTPUT inserted.id
-         VALUES (@businessId, @customerId, @total, 'RECEIVED', @paymentMethod, @deliveryAddress, @notes, @deliveryFee, @channel, @tableNumber)`
-      );
-    const orderId: number = orderInsert.recordset[0].id;
+    const [orderResult] = await conn.query(
+      `INSERT INTO Orders (businessId, customerId, total, status, paymentMethod, deliveryAddress, notes, deliveryFee, channel)
+       VALUES (?, ?, ?, 'RECEIVED', ?, ?, ?, ?, ?)`,
+      [businessId, data.customerId ?? null, grandTotal, data.paymentMethod || null,
+       data.deliveryAddress || null, data.notes || null, deliveryFee, data.channel || 'balcao']
+    );
+    const orderId: number = (orderResult as any).insertId;
 
-    await insertItems(transaction as any, orderId, itemsWithPrice);
-    await transaction.commit();
-
+    await insertItems(conn, orderId, itemsWithPrice);
+    await conn.commit();
     return findOrderById(orderId);
   } catch (err) {
-    try { await transaction.rollback(); } catch (e) { /* ignore */ }
+    await conn.rollback();
     throw err;
+  } finally {
+    conn.release();
   }
 };
 
 export const findAllOrders = async () => {
   const { businessId } = getBusinessContext()!;
-  const conn = await getPool();
-  const req = conn.request();
-  req.input('businessId', sql.UniqueIdentifier, businessId);
-  const result = await req.query(`
+  const pool = getPool();
+  const [rows] = await pool.query<any[]>(`
     SELECT o.*, c.name AS customerName
     FROM Orders o
     LEFT JOIN Customers c ON o.customerId = c.id
-    WHERE o.businessId = @businessId
+    WHERE o.businessId = ?
     ORDER BY o.createdAt DESC
-  `);
-  return result.recordset;
+  `, [businessId]);
+  return rows;
 };
 
 export const findOrdersByCustomer = async (customerId: string) => {
   const { businessId } = getBusinessContext()!;
-  const conn = await getPool();
-  const req = conn.request();
-  req.input('customerId', sql.UniqueIdentifier, customerId);
-  req.input('businessId', sql.UniqueIdentifier, businessId);
-  const orders = await req.query(
-    'SELECT * FROM Orders WHERE customerId = @customerId AND businessId = @businessId ORDER BY createdAt DESC'
+  const pool = getPool();
+  const [rows] = await pool.query<any[]>(
+    'SELECT * FROM Orders WHERE customerId = ? AND businessId = ? ORDER BY createdAt DESC',
+    [customerId, businessId]
   );
-  return orders.recordset;
+  return rows;
 };
 
 export const findOrderById = async (orderId: number) => {
   const { businessId } = getBusinessContext()!;
-  const conn = await getPool();
-  const req = conn.request();
-  req.input('id', sql.Int, orderId);
-  req.input('businessId', sql.UniqueIdentifier, businessId);
-  const orderRes = await req.query(`
+  const pool = getPool();
+  const [orderRes] = await pool.query<any[]>(`
     SELECT o.*, c.name AS customerName
     FROM Orders o
     LEFT JOIN Customers c ON o.customerId = c.id
-    WHERE o.id = @id AND o.businessId = @businessId
-  `);
-  if (!orderRes.recordset[0]) return null;
+    WHERE o.id = ? AND o.businessId = ?
+  `, [orderId, businessId]);
+  if (!orderRes[0]) return null;
 
-  const itemsReq = conn.request();
-  itemsReq.input('oid', sql.Int, orderId);
-  const itemsRes = await itemsReq.query(`
+  const [itemsRes] = await pool.query<any[]>(`
     SELECT oi.*, p.name AS productName
     FROM OrderItems oi
     LEFT JOIN Products p ON oi.productId = p.id
-    WHERE oi.orderId = @oid
-  `);
+    WHERE oi.orderId = ?
+  `, [orderId]);
 
-  const items = itemsRes.recordset;
-
+  const items = itemsRes as any[];
   for (const item of items) {
-    const vReq = conn.request();
-    vReq.input('orderItemId', sql.UniqueIdentifier, item.id);
-    const vRes = await vReq.query(`
+    const [vRes] = await pool.query<any[]>(`
       SELECT oiv.*, pv.name AS variationName, pv.type AS variationType
       FROM OrderItemVariations oiv
       LEFT JOIN ProductVariations pv ON oiv.variationId = pv.id
-      WHERE oiv.orderItemId = @orderItemId
-    `);
-    item.variations = vRes.recordset;
+      WHERE oiv.orderItemId = ?
+    `, [item.id]);
+    item.variations = vRes;
   }
 
-  return { ...orderRes.recordset[0], items };
+  return { ...orderRes[0], items };
 };
 
 export const updateOrderStatus = async (orderId: number, status: string) => {
   const { businessId } = getBusinessContext()!;
-  const conn = await getPool();
-  const req = conn.request();
-  req.input('id', sql.Int, orderId);
-  req.input('status', sql.NVarChar(50), status);
-  req.input('businessId', sql.UniqueIdentifier, businessId);
-  const query = status === 'DELIVERED'
-    ? `UPDATE Orders SET status = @status, deliveredAt = SYSUTCDATETIME() OUTPUT inserted.* WHERE id = @id AND businessId = @businessId`
-    : `UPDATE Orders SET status = @status OUTPUT inserted.* WHERE id = @id AND businessId = @businessId`;
-  const res = await req.query(query);
-  return res.recordset[0];
+  const pool = getPool();
+  if (status === 'DELIVERED') {
+    await pool.query(
+      'UPDATE Orders SET status = ?, deliveredAt = UTC_TIMESTAMP() WHERE id = ? AND businessId = ?',
+      [status, orderId, businessId]
+    );
+  } else {
+    await pool.query(
+      'UPDATE Orders SET status = ? WHERE id = ? AND businessId = ?',
+      [status, orderId, businessId]
+    );
+  }
+  const [rows] = await pool.query<any[]>('SELECT * FROM Orders WHERE id = ?', [orderId]);
+  return rows[0];
 };
 
 export const deleteOrder = async (orderId: number) => {
   const { businessId } = getBusinessContext()!;
-  const connection = await getPool();
-  const transaction = new sql.Transaction(connection);
+  const pool = getPool();
+  const conn = await pool.getConnection();
   try {
-    await transaction.begin();
+    await conn.beginTransaction();
 
-    // Delete OrderItemVariations first
-    const oivReq = new sql.Request(transaction as any);
-    await oivReq.input('oid', sql.Int, orderId).query(`
+    await conn.query(`
       DELETE oiv FROM OrderItemVariations oiv
       INNER JOIN OrderItems oi ON oiv.orderItemId = oi.id
-      WHERE oi.orderId = @oid
-    `);
+      WHERE oi.orderId = ?
+    `, [orderId]);
 
-    const itemsReq = new sql.Request(transaction as any);
-    await itemsReq.input('oid', sql.Int, orderId)
-      .query('DELETE FROM OrderItems WHERE orderId = @oid');
+    await conn.query('DELETE FROM OrderItems WHERE orderId = ?', [orderId]);
 
-    const orderReq = new sql.Request(transaction as any);
-    const res = await orderReq
-      .input('id', sql.Int, orderId)
-      .input('businessId', sql.UniqueIdentifier, businessId)
-      .query('DELETE FROM Orders WHERE id = @id AND businessId = @businessId');
+    const [res] = await conn.query(
+      'DELETE FROM Orders WHERE id = ? AND businessId = ?',
+      [orderId, businessId]
+    );
 
-    await transaction.commit();
-    return res.rowsAffected[0] > 0;
+    await conn.commit();
+    return (res as any).affectedRows > 0;
   } catch (err) {
-    try { await transaction.rollback(); } catch (e) { /* ignore */ }
+    await conn.rollback();
     throw err;
+  } finally {
+    conn.release();
   }
 };
 
 export const updateOrder = async (orderId: number, data: CreateOrderDTO) => {
   const { businessId } = getBusinessContext()!;
-  const connection = await getPool();
-  const transaction = new sql.Transaction(connection);
+  const pool = getPool();
+  const conn = await pool.getConnection();
   try {
-    await transaction.begin();
+    await conn.beginTransaction();
 
-    // Delete old variations and items
-    const oivReq = new sql.Request(transaction as any);
-    await oivReq.input('oid', sql.Int, orderId).query(`
+    await conn.query(`
       DELETE oiv FROM OrderItemVariations oiv
       INNER JOIN OrderItems oi ON oiv.orderItemId = oi.id
-      WHERE oi.orderId = @oid
-    `);
+      WHERE oi.orderId = ?
+    `, [orderId]);
 
-    const delReq = new sql.Request(transaction as any);
-    await delReq.input('oid', sql.Int, orderId)
-      .query('DELETE FROM OrderItems WHERE orderId = @oid');
+    await conn.query('DELETE FROM OrderItems WHERE orderId = ?', [orderId]);
 
     let itemsTotal = 0;
     const itemsWithPrice: ItemWithPrice[] = [];
     for (const it of data.items) {
-      const item = await calcItemPrice(transaction, it);
+      const item = await calcItemPrice(conn, it);
       itemsWithPrice.push(item);
       itemsTotal += item.finalPrice * it.quantity;
     }
@@ -271,30 +218,24 @@ export const updateOrder = async (orderId: number, data: CreateOrderDTO) => {
     const deliveryFee = data.deliveryFee || 0;
     const grandTotal = Math.round((itemsTotal + deliveryFee) * 100) / 100;
 
-    const updReq = new sql.Request(transaction as any);
-    await updReq
-      .input('id', sql.Int, orderId)
-      .input('businessId', sql.UniqueIdentifier, businessId)
-      .input('customerId', sql.UniqueIdentifier, data.customerId ?? null)
-      .input('total', sql.Decimal(12, 2), grandTotal)
-      .input('paymentMethod', sql.NVarChar(50), data.paymentMethod || null)
-      .input('deliveryAddress', sql.NVarChar(500), data.deliveryAddress || null)
-      .input('notes', sql.NVarChar(1000), data.notes || null)
-      .input('deliveryFee', sql.Decimal(10, 2), deliveryFee)
-      .query(`
-        UPDATE Orders SET
-          customerId = @customerId, total = @total,
-          paymentMethod = @paymentMethod, deliveryAddress = @deliveryAddress,
-          notes = @notes, deliveryFee = @deliveryFee
-        WHERE id = @id AND businessId = @businessId
-      `);
+    await conn.query(
+      `UPDATE Orders SET
+         customerId = ?, total = ?,
+         paymentMethod = ?, deliveryAddress = ?,
+         notes = ?, deliveryFee = ?
+       WHERE id = ? AND businessId = ?`,
+      [data.customerId ?? null, grandTotal, data.paymentMethod || null,
+       data.deliveryAddress || null, data.notes || null, deliveryFee,
+       orderId, businessId]
+    );
 
-    await insertItems(transaction as any, orderId, itemsWithPrice);
-    await transaction.commit();
-
+    await insertItems(conn, orderId, itemsWithPrice);
+    await conn.commit();
     return findOrderById(orderId);
   } catch (err) {
-    try { await transaction.rollback(); } catch (e) { /* ignore */ }
+    await conn.rollback();
     throw err;
+  } finally {
+    conn.release();
   }
 };

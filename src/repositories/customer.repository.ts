@@ -1,110 +1,93 @@
-import { getPool, sql } from '../database/mssqlClient';
+import { getPool } from '../database/mysqlClient';
 import { getBusinessContext } from '../database/businessContext';
 import { CreateCustomerDTO, UpdateCustomerDTO } from '../dtos/customer.dto';
-
-function bindAddressInputs(request: any, data: Partial<CreateCustomerDTO>): void {
-  request.input('cep',          sql.NVarChar(9),   data.cep ?? null);
-  request.input('street',       sql.NVarChar(200), data.street ?? null);
-  request.input('number',       sql.NVarChar(20),  data.number ?? null);
-  request.input('complement',   sql.NVarChar(200), data.complement ?? null);
-  request.input('neighborhood', sql.NVarChar(200), data.neighborhood ?? null);
-  request.input('city',         sql.NVarChar(100), data.city ?? null);
-  request.input('uf',           sql.NVarChar(2),   data.uf ?? null);
-  request.input('latitude',     sql.Decimal(9, 6), data.latitude ?? null);
-  request.input('longitude',    sql.Decimal(9, 6), data.longitude ?? null);
-}
+import { v4 as uuidv4 } from 'uuid';
 
 export const getAllCustomers = async () => {
   const { businessId } = getBusinessContext()!;
-  const conn = await getPool();
-  const req = conn.request();
-  req.input('businessId', sql.UniqueIdentifier, businessId);
-  const result = await req.query('SELECT * FROM Customers WHERE businessId = @businessId ORDER BY name');
-  return result.recordset;
+  const pool = getPool();
+  const [rows] = await pool.query<any[]>(
+    'SELECT * FROM Customers WHERE businessId = ? ORDER BY name',
+    [businessId]
+  );
+  return rows;
 };
 
 export const createCustomer = async (data: CreateCustomerDTO) => {
   const { businessId } = getBusinessContext()!;
-  const conn = await getPool();
-  const request = conn.request();
-  request.input('businessId', sql.UniqueIdentifier, businessId);
-  request.input('name',       sql.NVarChar(200), data.name);
-  request.input('phone',      sql.NVarChar(50),  data.phone);
-  request.input('address',    sql.NVarChar(500), data.address || null);
-  bindAddressInputs(request, data);
-  const result = await request.query(
-    `INSERT INTO Customers (businessId, name, phone, address, cep, street, [number], complement, neighborhood, city, uf, latitude, longitude)
-     OUTPUT inserted.*
-     VALUES (@businessId, @name, @phone, @address, @cep, @street, @number, @complement, @neighborhood, @city, @uf, @latitude, @longitude)`
+  const pool = getPool();
+  const id = uuidv4();
+  await pool.query(
+    `INSERT INTO Customers (id, businessId, name, phone, address, cep, street, \`number\`, complement, neighborhood, city, uf, latitude, longitude)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, businessId, data.name, data.phone, data.address || null,
+     data.cep ?? null, data.street ?? null, data.number ?? null,
+     data.complement ?? null, data.neighborhood ?? null,
+     data.city ?? null, data.uf ?? null,
+     data.latitude ?? null, data.longitude ?? null]
   );
-  return result.recordset[0];
+  const [rows] = await pool.query<any[]>('SELECT * FROM Customers WHERE id = ?', [id]);
+  return rows[0];
 };
 
 export const findCustomerById = async (id: string) => {
   const { businessId } = getBusinessContext()!;
-  const conn = await getPool();
-  const request = conn.request();
-  request.input('id', sql.UniqueIdentifier, id);
-  request.input('businessId', sql.UniqueIdentifier, businessId);
-  const result = await request.query(
-    `SELECT * FROM Customers WHERE id = @id AND businessId = @businessId`
+  const pool = getPool();
+  const [rows] = await pool.query<any[]>(
+    'SELECT * FROM Customers WHERE id = ? AND businessId = ?',
+    [id, businessId]
   );
-  return result.recordset[0];
+  return rows[0];
 };
 
 export const findCustomerByPhone = async (phone: string) => {
   const { businessId } = getBusinessContext()!;
-  const conn = await getPool();
-  const request = conn.request();
-  request.input('phone', sql.NVarChar(50), phone);
-  request.input('businessId', sql.UniqueIdentifier, businessId);
-  const result = await request.query(
-    `SELECT TOP 1 * FROM Customers WHERE businessId = @businessId AND phone = @phone`
+  const pool = getPool();
+  const [rows] = await pool.query<any[]>(
+    'SELECT * FROM Customers WHERE businessId = ? AND phone = ? LIMIT 1',
+    [businessId, phone]
   );
-  return result.recordset[0];
+  return rows[0];
 };
 
 export const findCustomersByNameOrPhone = async (term: string) => {
   const { businessId } = getBusinessContext()!;
-  const conn = await getPool();
-  const request = conn.request();
+  const pool = getPool();
   const like = `%${term}%`;
-  request.input('term', sql.NVarChar(200), like);
-  request.input('businessId', sql.UniqueIdentifier, businessId);
-  const result = await request.query(
-    `SELECT * FROM Customers WHERE businessId = @businessId AND (name LIKE @term OR phone LIKE @term)`
+  const [rows] = await pool.query<any[]>(
+    'SELECT * FROM Customers WHERE businessId = ? AND (name LIKE ? OR phone LIKE ?)',
+    [businessId, like, like]
   );
-  return result.recordset;
+  return rows;
 };
 
 export const updateCustomer = async (id: string, data: UpdateCustomerDTO) => {
   const { businessId } = getBusinessContext()!;
-  const conn = await getPool();
-  const request = conn.request();
-  request.input('id',         sql.UniqueIdentifier, id);
-  request.input('businessId', sql.UniqueIdentifier, businessId);
-  request.input('name',       sql.NVarChar(200), data.name ?? null);
-  request.input('phone',      sql.NVarChar(50),  data.phone ?? null);
-  request.input('address',    sql.NVarChar(500), data.address ?? null);
-  bindAddressInputs(request, data);
-  const result = await request.query(
+  const pool = getPool();
+  await pool.query(
     `UPDATE Customers SET
-       name         = COALESCE(@name, name),
-       phone        = COALESCE(@phone, phone),
-       address      = COALESCE(@address, address),
-       cep          = COALESCE(@cep, cep),
-       street       = COALESCE(@street, street),
-       [number]     = COALESCE(@number, [number]),
-       complement   = COALESCE(@complement, complement),
-       neighborhood = COALESCE(@neighborhood, neighborhood),
-       city         = COALESCE(@city, city),
-       uf           = COALESCE(@uf, uf),
-       latitude     = COALESCE(@latitude, latitude),
-       longitude    = COALESCE(@longitude, longitude)
-     OUTPUT inserted.*
-     WHERE id = @id AND businessId = @businessId`
+       name         = COALESCE(?, name),
+       phone        = COALESCE(?, phone),
+       address      = COALESCE(?, address),
+       cep          = COALESCE(?, cep),
+       street       = COALESCE(?, street),
+       \`number\`   = COALESCE(?, \`number\`),
+       complement   = COALESCE(?, complement),
+       neighborhood = COALESCE(?, neighborhood),
+       city         = COALESCE(?, city),
+       uf           = COALESCE(?, uf),
+       latitude     = COALESCE(?, latitude),
+       longitude    = COALESCE(?, longitude)
+     WHERE id = ? AND businessId = ?`,
+    [data.name ?? null, data.phone ?? null, data.address ?? null,
+     data.cep ?? null, data.street ?? null, data.number ?? null,
+     data.complement ?? null, data.neighborhood ?? null,
+     data.city ?? null, data.uf ?? null,
+     data.latitude ?? null, data.longitude ?? null,
+     id, businessId]
   );
-  return result.recordset[0];
+  const [rows] = await pool.query<any[]>('SELECT * FROM Customers WHERE id = ?', [id]);
+  return rows[0];
 };
 
 export const upsertCustomerByPhone = async (data: CreateCustomerDTO) => {
@@ -117,14 +100,13 @@ export const upsertCustomerByPhone = async (data: CreateCustomerDTO) => {
 
 export const deleteCustomer = async (id: string) => {
   const { businessId } = getBusinessContext()!;
-  const conn = await getPool();
-  const request = conn.request();
-  request.input('id', sql.UniqueIdentifier, id);
-  request.input('businessId', sql.UniqueIdentifier, businessId);
-  // Desvincula pedidos existentes antes de deletar (preserva histórico)
-  await request.query('UPDATE Orders SET customerId = NULL WHERE customerId = @id AND businessId = @businessId');
-  await conn.request()
-    .input('id', sql.UniqueIdentifier, id)
-    .input('businessId', sql.UniqueIdentifier, businessId)
-    .query('DELETE FROM Customers WHERE id = @id AND businessId = @businessId');
+  const pool = getPool();
+  await pool.query(
+    'UPDATE Orders SET customerId = NULL WHERE customerId = ? AND businessId = ?',
+    [id, businessId]
+  );
+  await pool.query(
+    'DELETE FROM Customers WHERE id = ? AND businessId = ?',
+    [id, businessId]
+  );
 };

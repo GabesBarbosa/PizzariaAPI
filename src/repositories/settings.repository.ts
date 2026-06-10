@@ -1,145 +1,39 @@
-import { getPool, sql } from '../database/mssqlClient';
+import { getPool } from '../database/mysqlClient';
 import { getBusinessContext } from '../database/businessContext';
 import logger from '../utils/logger';
 
 const DEFAULT_DELIVERY_FEE = 5;
 
-// Promise-lock: todas as chamadas concorrentes aguardam a mesma migração
-let migrationLock: Promise<void> | null = null;
-let migrationDone = false;
-
-async function ensureSettingsTable(conn: any): Promise<void> {
-  // Já migrou nesta execução — retorna imediatamente
-  if (migrationDone) return;
-
-  // Já há uma migração em curso — aguarda ela terminar
-  if (migrationLock) {
-    await migrationLock;
-    return;
-  }
-
-  migrationLock = (async () => {
-    try {
-      // Cria tabela com businessId se não existir
-      await conn.request().query(`
-        IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'Settings')
-        BEGIN
-          CREATE TABLE Settings (
-            businessId  UNIQUEIDENTIFIER NOT NULL,
-            [key]       NVARCHAR(100)    NOT NULL,
-            value       NVARCHAR(500)    NOT NULL,
-            updatedAt   DATETIME2        NOT NULL DEFAULT SYSUTCDATETIME(),
-            PRIMARY KEY (businessId, [key])
-          );
-        END
-      `);
-
-      // Migração: se a tabela existe mas sem a coluna businessId
-      const colExists = await conn.request().query(`
-        SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_NAME = 'Settings' AND COLUMN_NAME = 'businessId'
-      `);
-      if (colExists.recordset.length === 0) {
-        logger.warn('[Settings] Migrando tabela Settings para schema multi-tenant...');
-
-        const pkResult = await conn.request().query(`
-          SELECT kc.name AS constraintName
-          FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
-          JOIN sys.key_constraints kc ON kc.name = tc.CONSTRAINT_NAME
-          WHERE tc.TABLE_NAME = 'Settings' AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
-        `);
-
-        await conn.request().query(`
-          ALTER TABLE Settings ADD businessId UNIQUEIDENTIFIER NULL;
-          UPDATE Settings SET businessId = '00000000-0000-0000-0000-000000000000';
-          ALTER TABLE Settings ALTER COLUMN businessId UNIQUEIDENTIFIER NOT NULL;
-        `);
-
-        if (pkResult.recordset.length > 0) {
-          const pkName = pkResult.recordset[0].constraintName;
-          await conn.request().query(`ALTER TABLE Settings DROP CONSTRAINT [${pkName}]`);
-        }
-
-        await conn.request().query(`ALTER TABLE Settings ADD PRIMARY KEY (businessId, [key])`);
-        logger.warn('[Settings] Migração concluída.');
-      }
-
-      migrationDone = true;
-    } finally {
-      migrationLock = null;
-    }
-  })();
-
-  await migrationLock;
-}
-
 export const getSetting = async (key: string): Promise<string | null> => {
   const { businessId } = getBusinessContext()!;
-  try {
-    const conn = await getPool();
-    const result = await conn.request()
-      .input('businessId', sql.UniqueIdentifier, businessId)
-      .input('key', sql.NVarChar(100), key)
-      .query('SELECT value FROM Settings WHERE businessId = @businessId AND [key] = @key');
-    return result.recordset[0]?.value ?? null;
-  } catch (err: any) {
-    if (err.message?.includes("Invalid object name 'Settings'") || err.message?.includes('Invalid column name')) {
-      logger.warn('[Settings] Tabela Settings ausente ou desatualizada — criando/migrando...');
-      const conn = await getPool();
-      await ensureSettingsTable(conn);
-      const result = await conn.request()
-        .input('businessId', sql.UniqueIdentifier, businessId)
-        .input('key', sql.NVarChar(100), key)
-        .query('SELECT value FROM Settings WHERE businessId = @businessId AND [key] = @key');
-      return result.recordset[0]?.value ?? null;
-    }
-    throw err;
-  }
+  const pool = getPool();
+  const [rows] = await pool.query<any[]>(
+    'SELECT value FROM Settings WHERE businessId = ? AND `key` = ?',
+    [businessId, key]
+  );
+  return rows[0]?.value ?? null;
 };
 
 export const setSetting = async (key: string, value: string): Promise<void> => {
   const { businessId } = getBusinessContext()!;
-  try {
-    const conn = await getPool();
-    await conn.request()
-      .input('businessId', sql.UniqueIdentifier, businessId)
-      .input('key',   sql.NVarChar(100), key)
-      .input('value', sql.NVarChar(500), value)
-      .query(`
-        MERGE Settings AS target
-        USING (SELECT @businessId AS businessId, @key AS [key], @value AS value) AS source
-          ON target.businessId = source.businessId AND target.[key] = source.[key]
-        WHEN MATCHED    THEN UPDATE SET value = source.value, updatedAt = SYSUTCDATETIME()
-        WHEN NOT MATCHED THEN INSERT (businessId, [key], value) VALUES (source.businessId, source.[key], source.value);
-      `);
-  } catch (err: any) {
-    if (err.message?.includes("Invalid object name 'Settings'") || err.message?.includes('Invalid column name')) {
-      logger.warn('[Settings] Tabela Settings ausente ou desatualizada — criando/migrando...');
-      const conn = await getPool();
-      await ensureSettingsTable(conn);
-      await setSetting(key, value);
-    } else {
-      throw err;
-    }
-  }
+  const pool = getPool();
+  await pool.query(
+    `INSERT INTO Settings (businessId, \`key\`, value) VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE value = VALUES(value), updatedAt = UTC_TIMESTAMP()`,
+    [businessId, key, value]
+  );
 };
 
 export type ChatbotMode = 'ai' | 'triggers';
 export type BusinessType = 'pizzaria' | 'hamburgueria' | 'generic';
 
 export const setSettingForBusiness = async (businessId: string, key: string, value: string): Promise<void> => {
-  const conn = await getPool();
-  await conn.request()
-    .input('businessId', sql.UniqueIdentifier, businessId)
-    .input('key', sql.NVarChar(100), key)
-    .input('value', sql.NVarChar(500), value)
-    .query(`
-      MERGE Settings AS target
-      USING (SELECT @businessId AS businessId, @key AS [key], @value AS value) AS source
-        ON target.businessId = source.businessId AND target.[key] = source.[key]
-      WHEN MATCHED    THEN UPDATE SET value = source.value, updatedAt = SYSUTCDATETIME()
-      WHEN NOT MATCHED THEN INSERT (businessId, [key], value) VALUES (source.businessId, source.[key], source.value);
-    `);
+  const pool = getPool();
+  await pool.query(
+    `INSERT INTO Settings (businessId, \`key\`, value) VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE value = VALUES(value), updatedAt = UTC_TIMESTAMP()`,
+    [businessId, key, value]
+  );
 };
 
 export const getBusinessType = async (): Promise<BusinessType> => {
@@ -147,7 +41,7 @@ export const getBusinessType = async (): Promise<BusinessType> => {
     const v = await getSetting('businessType');
     if (v === 'pizzaria') return 'pizzaria';
     if (v === 'generic')  return 'generic';
-    return 'hamburgueria'; // default quando não configurado
+    return 'hamburgueria';
   } catch {
     return 'hamburgueria';
   }
@@ -169,7 +63,7 @@ export const getChatbotMode = async (): Promise<ChatbotMode> => {
 export const getChatbotEnabled = async (): Promise<boolean> => {
   try {
     const v = await getSetting('chatbotEnabled');
-    return v !== 'false'; // default: enabled
+    return v !== 'false';
   } catch {
     return true;
   }
@@ -221,8 +115,8 @@ const DEFAULT_CRUST_OPTIONS: CrustOption[] = [
 ];
 
 const DEFAULT_SIZE_OPTIONS: Record<string, SizeOption> = {
-  normal:   { label: 'Normal',   maxFlavors: 2, multiplier: 1.00 },
-  brotinho: { label: 'Pequeno',  maxFlavors: 1, multiplier: 0.65 },
+  normal:   { label: 'Normal',  maxFlavors: 2, multiplier: 1.00 },
+  brotinho: { label: 'Pequeno', maxFlavors: 1, multiplier: 0.65 },
 };
 
 const DEFAULT_PAYMENT_METHODS: PaymentOption[] = [
@@ -234,11 +128,12 @@ const DEFAULT_PAYMENT_METHODS: PaymentOption[] = [
 export const getBusinessName = async (): Promise<string> => {
   const { businessId } = getBusinessContext()!;
   try {
-    const conn = await getPool();
-    const result = await conn.request()
-      .input('id', sql.UniqueIdentifier, businessId)
-      .query('SELECT name FROM Businesses WHERE id = @id');
-    return result.recordset[0]?.name ?? 'Nosso Delivery';
+    const pool = getPool();
+    const [rows] = await pool.query<any[]>(
+      'SELECT name FROM Businesses WHERE id = ?',
+      [businessId]
+    );
+    return rows[0]?.name ?? 'Nosso Delivery';
   } catch (err: any) {
     logger.warn(`[Settings] getBusinessName falhou: ${err.message}`);
     return 'Nosso Delivery';
@@ -291,7 +186,7 @@ export const getChatbotConfig = async (): Promise<ChatbotConfig> => {
   return { businessName, crustOptions, sizeOptions, paymentMethods };
 };
 
-/* ─── Origem do estabelecimento (endereço + coordenadas) ─── */
+/* ─── Origem do estabelecimento ─── */
 
 export interface BusinessOrigin {
   cep: string;
@@ -319,11 +214,11 @@ export const setBusinessOrigin = async (origin: BusinessOrigin): Promise<void> =
   await setSetting('businessOrigin', JSON.stringify(origin));
 };
 
-/* ─── Faixas de frete por km (modelo iFood) ─── */
+/* ─── Faixas de frete por km ─── */
 
 export interface DeliveryZone {
-  minKm: number;  // inclusive
-  maxKm: number;  // exclusive (Infinity = sem teto)
+  minKm: number;
+  maxKm: number;
   fee: number;
 }
 
@@ -364,7 +259,7 @@ export const setTableCount = async (count: number): Promise<void> => {
   await setSetting('tableCount', count.toString());
 };
 
-/* ─── Resolução de business por slug (para rotas públicas) ─── */
+/* ─── Resolução de business por slug ─── */
 
 export interface PublicBusinessInfo {
   id: string;
@@ -375,11 +270,12 @@ export interface PublicBusinessInfo {
 
 export const findBusinessBySlug = async (slug: string): Promise<PublicBusinessInfo | null> => {
   try {
-    const conn = await getPool();
-    const result = await conn.request()
-      .input('slug', sql.NVarChar(100), slug)
-      .query('SELECT id, name, slug, active FROM Businesses WHERE slug = @slug AND active = 1');
-    return result.recordset[0] ?? null;
+    const pool = getPool();
+    const [rows] = await pool.query<any[]>(
+      'SELECT id, name, slug, active FROM Businesses WHERE slug = ? AND active = 1',
+      [slug]
+    );
+    return rows[0] ?? null;
   } catch (err: any) {
     logger.warn(`[Settings] findBusinessBySlug falhou: ${err.message}`);
     return null;
@@ -389,11 +285,12 @@ export const findBusinessBySlug = async (slug: string): Promise<PublicBusinessIn
 export const getCurrentBusinessInfo = async (): Promise<PublicBusinessInfo | null> => {
   const { businessId } = getBusinessContext()!;
   try {
-    const conn = await getPool();
-    const result = await conn.request()
-      .input('id', sql.UniqueIdentifier, businessId)
-      .query('SELECT id, name, slug, active FROM Businesses WHERE id = @id');
-    return result.recordset[0] ?? null;
+    const pool = getPool();
+    const [rows] = await pool.query<any[]>(
+      'SELECT id, name, slug, active FROM Businesses WHERE id = ?',
+      [businessId]
+    );
+    return rows[0] ?? null;
   } catch (err: any) {
     logger.warn(`[Settings] getCurrentBusinessInfo falhou: ${err.message}`);
     return null;

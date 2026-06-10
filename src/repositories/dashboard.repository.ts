@@ -1,83 +1,75 @@
-import { getPool, sql } from '../database/mssqlClient';
+import { getPool } from '../database/mysqlClient';
 import { getBusinessContext } from '../database/businessContext';
 
 function getDateFilter(period: string): string {
   switch (period) {
-    case 'day':   return `AND o.createdAt >= CAST(GETDATE() AS DATE)`;
-    case 'week':  return `AND o.createdAt >= DATEADD(DAY, -7, GETDATE())`;
-    case 'month': return `AND o.createdAt >= DATEADD(MONTH, -1, GETDATE())`;
-    default:      return `AND o.createdAt >= DATEADD(DAY, -7, GETDATE())`;
+    case 'day':   return `AND o.createdAt >= DATE(NOW())`;
+    case 'week':  return `AND o.createdAt >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
+    case 'month': return `AND o.createdAt >= DATE_SUB(NOW(), INTERVAL 1 MONTH)`;
+    default:      return `AND o.createdAt >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
   }
 }
 
 function getDateFilterNoAlias(period: string): string {
   switch (period) {
-    case 'day':   return `AND createdAt >= CAST(GETDATE() AS DATE)`;
-    case 'week':  return `AND createdAt >= DATEADD(DAY, -7, GETDATE())`;
-    case 'month': return `AND createdAt >= DATEADD(MONTH, -1, GETDATE())`;
-    default:      return `AND createdAt >= DATEADD(DAY, -7, GETDATE())`;
+    case 'day':   return `AND createdAt >= DATE(NOW())`;
+    case 'week':  return `AND createdAt >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
+    case 'month': return `AND createdAt >= DATE_SUB(NOW(), INTERVAL 1 MONTH)`;
+    default:      return `AND createdAt >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
   }
 }
 
 export const getStats = async (period: string = 'week') => {
   const { businessId } = getBusinessContext()!;
-  const conn = await getPool();
+  const pool = getPool();
   const dateF = getDateFilterNoAlias(period);
 
-  const r = conn.request();
-  r.input('businessId', sql.UniqueIdentifier, businessId);
-
-  const counts = await r.query(`
+  const [counts] = await pool.query<any[]>(`
     SELECT
-      (SELECT COUNT(*) FROM Orders WHERE businessId = @businessId ${dateF}) AS totalOrders,
-      (SELECT COUNT(*) FROM Orders WHERE businessId = @businessId AND status NOT IN ('OUT_FOR_DELIVERY', 'DELIVERED') ${dateF}) AS pendingOrders,
-      (SELECT COUNT(*) FROM Customers WHERE businessId = @businessId) AS totalCustomers,
-      (SELECT COUNT(*) FROM Products WHERE businessId = @businessId) AS totalProducts,
-      (SELECT ISNULL(SUM(total), 0) FROM Orders WHERE businessId = @businessId ${dateF}) AS totalRevenue
-  `);
+      (SELECT COUNT(*) FROM Orders WHERE businessId = ? ${dateF}) AS totalOrders,
+      (SELECT COUNT(*) FROM Orders WHERE businessId = ? AND status NOT IN ('OUT_FOR_DELIVERY', 'DELIVERED') ${dateF}) AS pendingOrders,
+      (SELECT COUNT(*) FROM Customers WHERE businessId = ?) AS totalCustomers,
+      (SELECT COUNT(*) FROM Products WHERE businessId = ?) AS totalProducts,
+      (SELECT IFNULL(SUM(total), 0) FROM Orders WHERE businessId = ? ${dateF}) AS totalRevenue
+  `, [businessId, businessId, businessId, businessId, businessId]);
 
-  const r2 = conn.request();
-  r2.input('businessId', sql.UniqueIdentifier, businessId);
-  const recentOrders = await r2.query(`
-    SELECT TOP 5
-      o.id, o.total, o.status, o.createdAt,
-      c.name AS customerName
+  const [recentOrders] = await pool.query<any[]>(`
+    SELECT o.id, o.total, o.status, o.createdAt, c.name AS customerName
     FROM Orders o
     LEFT JOIN Customers c ON o.customerId = c.id
-    WHERE o.businessId = @businessId ${getDateFilter(period)}
+    WHERE o.businessId = ? ${getDateFilter(period)}
     ORDER BY o.createdAt DESC
-  `);
+    LIMIT 5
+  `, [businessId]);
 
-  const r3 = conn.request();
-  r3.input('businessId', sql.UniqueIdentifier, businessId);
-  const topProducts = await r3.query(`
-    SELECT TOP 5
-      p.name,
-      SUM(oi.quantity) AS totalSold,
-      SUM(oi.quantity * oi.finalPrice) AS totalRevenue
+  const [topProducts] = await pool.query<any[]>(`
+    SELECT p.name,
+           SUM(oi.quantity) AS totalSold,
+           SUM(oi.quantity * oi.finalPrice) AS totalRevenue
     FROM OrderItems oi
     INNER JOIN Products p ON oi.productId = p.id
     INNER JOIN Orders o ON oi.orderId = o.id
-    WHERE o.businessId = @businessId ${getDateFilter(period)}
+    WHERE o.businessId = ? ${getDateFilter(period)}
     GROUP BY p.name
     ORDER BY totalSold DESC
-  `);
+    LIMIT 5
+  `, [businessId]);
 
-  const row = counts.recordset[0];
+  const row = (counts as any[])[0];
   return {
     totalOrders: row.totalOrders,
     pendingOrders: row.pendingOrders,
     totalCustomers: row.totalCustomers,
     totalProducts: row.totalProducts,
     totalRevenue: parseFloat(row.totalRevenue),
-    recentOrders: recentOrders.recordset.map((o: any) => ({
+    recentOrders: (recentOrders as any[]).map((o: any) => ({
       id: o.id,
       customerName: o.customerName,
       total: parseFloat(o.total),
       status: o.status,
       createdAt: o.createdAt
     })),
-    topProducts: topProducts.recordset.map((p: any) => ({
+    topProducts: (topProducts as any[]).map((p: any) => ({
       name: p.name,
       totalSold: p.totalSold,
       totalRevenue: parseFloat(p.totalRevenue)
@@ -87,140 +79,122 @@ export const getStats = async (period: string = 'week') => {
 
 export const getAnalytics = async (period: string = 'week') => {
   const { businessId } = getBusinessContext()!;
-  const conn = await getPool();
+  const pool = getPool();
   const dateF = getDateFilter(period);
   const dateNoAlias = getDateFilterNoAlias(period);
 
-  const mkReq = () => {
-    const r = conn.request();
-    r.input('businessId', sql.UniqueIdentifier, businessId);
-    return r;
-  };
-
-  const periodStats = await mkReq().query(`
+  const [periodStats] = await pool.query<any[]>(`
     SELECT
-      ISNULL(SUM(total), 0) AS periodRevenue,
+      IFNULL(SUM(total), 0) AS periodRevenue,
       COUNT(*) AS periodOrders,
-      ISNULL(AVG(total), 0) AS avgTicket
+      IFNULL(AVG(total), 0) AS avgTicket
     FROM Orders
-    WHERE businessId = @businessId ${dateNoAlias}
-  `);
+    WHERE businessId = ? ${dateNoAlias}
+  `, [businessId]);
 
-  const avgDelivery = await mkReq().query(`
-    SELECT ISNULL(AVG(DATEDIFF(MINUTE, createdAt, deliveredAt)), 0) AS avgMinutes
+  const [avgDelivery] = await pool.query<any[]>(`
+    SELECT IFNULL(AVG(TIMESTAMPDIFF(MINUTE, createdAt, deliveredAt)), 0) AS avgMinutes
     FROM Orders
-    WHERE businessId = @businessId AND status = 'DELIVERED' AND deliveredAt IS NOT NULL ${dateNoAlias}
-  `);
+    WHERE businessId = ? AND status = 'DELIVERED' AND deliveredAt IS NOT NULL ${dateNoAlias}
+  `, [businessId]);
 
-  const topProductPeriod = await mkReq().query(`
-    SELECT TOP 1 p.name
+  const [topProductPeriod] = await pool.query<any[]>(`
+    SELECT p.name
     FROM OrderItems oi
     INNER JOIN Orders o ON oi.orderId = o.id
     INNER JOIN Products p ON oi.productId = p.id
-    WHERE o.businessId = @businessId ${dateF}
+    WHERE o.businessId = ? ${dateF}
     GROUP BY p.name
     ORDER BY SUM(oi.quantity) DESC
-  `);
+    LIMIT 1
+  `, [businessId]);
 
-  const salesByDay = await mkReq().query(`
-    SELECT
-      CAST(o.createdAt AS DATE) AS day,
-      COUNT(*) AS orders,
-      ISNULL(SUM(o.total), 0) AS revenue
+  const [salesByDay] = await pool.query<any[]>(`
+    SELECT DATE(o.createdAt) AS day, COUNT(*) AS orders, IFNULL(SUM(o.total), 0) AS revenue
     FROM Orders o
-    WHERE o.businessId = @businessId ${dateF}
-    GROUP BY CAST(o.createdAt AS DATE)
+    WHERE o.businessId = ? ${dateF}
+    GROUP BY DATE(o.createdAt)
     ORDER BY day ASC
-  `);
+  `, [businessId]);
 
-  const topProducts = await mkReq().query(`
-    SELECT TOP 10
-      p.name,
-      p.category,
-      SUM(oi.quantity) AS totalSold,
-      SUM(oi.quantity * oi.finalPrice) AS totalRevenue
+  const [topProducts] = await pool.query<any[]>(`
+    SELECT p.name, p.category,
+           SUM(oi.quantity) AS totalSold,
+           SUM(oi.quantity * oi.finalPrice) AS totalRevenue
     FROM OrderItems oi
     INNER JOIN Products p ON oi.productId = p.id
     INNER JOIN Orders o ON oi.orderId = o.id
-    WHERE o.businessId = @businessId ${dateF}
+    WHERE o.businessId = ? ${dateF}
     GROUP BY p.name, p.category
     ORDER BY totalSold DESC
-  `);
+    LIMIT 10
+  `, [businessId]);
 
-  const revenueByPayment = await mkReq().query(`
-    SELECT
-      ISNULL(paymentMethod, 'nao_informado') AS method,
-      COUNT(*) AS count,
-      ISNULL(SUM(total), 0) AS revenue
+  const [revenueByPayment] = await pool.query<any[]>(`
+    SELECT IFNULL(paymentMethod, 'nao_informado') AS method,
+           COUNT(*) AS count,
+           IFNULL(SUM(total), 0) AS revenue
     FROM Orders
-    WHERE businessId = @businessId ${dateNoAlias}
+    WHERE businessId = ? ${dateNoAlias}
     GROUP BY paymentMethod
-  `);
+  `, [businessId]);
 
-  const ordersByHour = await mkReq().query(`
-    SELECT
-      DATEPART(HOUR, createdAt) AS hour,
-      COUNT(*) AS count
+  const [ordersByHour] = await pool.query<any[]>(`
+    SELECT HOUR(createdAt) AS hour, COUNT(*) AS count
     FROM Orders
-    WHERE businessId = @businessId ${dateNoAlias}
-    GROUP BY DATEPART(HOUR, createdAt)
+    WHERE businessId = ? ${dateNoAlias}
+    GROUP BY HOUR(createdAt)
     ORDER BY hour ASC
-  `);
+  `, [businessId]);
 
-  const revenueByCategory = await mkReq().query(`
-    SELECT
-      ISNULL(p.category, 'Sem Categoria') AS category,
-      SUM(oi.quantity) AS totalSold,
-      SUM(oi.quantity * oi.finalPrice) AS totalRevenue
+  const [revenueByCategory] = await pool.query<any[]>(`
+    SELECT IFNULL(p.category, 'Sem Categoria') AS category,
+           SUM(oi.quantity) AS totalSold,
+           SUM(oi.quantity * oi.finalPrice) AS totalRevenue
     FROM OrderItems oi
     INNER JOIN Products p ON oi.productId = p.id
     INNER JOIN Orders o ON oi.orderId = o.id
-    WHERE o.businessId = @businessId ${dateF}
+    WHERE o.businessId = ? ${dateF}
     GROUP BY p.category
     ORDER BY totalRevenue DESC
-  `);
+  `, [businessId]);
 
-  const ordersByChannel = await mkReq().query(`
-    SELECT
-      ISNULL(channel, 'balcao') AS channel,
-      COUNT(*) AS count,
-      ISNULL(SUM(total), 0) AS revenue
+  const [ordersByChannel] = await pool.query<any[]>(`
+    SELECT IFNULL(channel, 'balcao') AS channel, COUNT(*) AS count, IFNULL(SUM(total), 0) AS revenue
     FROM Orders
-    WHERE businessId = @businessId ${dateNoAlias}
+    WHERE businessId = ? ${dateNoAlias}
     GROUP BY channel
-  `);
+  `, [businessId]);
 
-  const ordersByStatus = await mkReq().query(`
+  const [ordersByStatus] = await pool.query<any[]>(`
     SELECT status, COUNT(*) AS count
     FROM Orders
-    WHERE businessId = @businessId ${dateNoAlias}
+    WHERE businessId = ? ${dateNoAlias}
     GROUP BY status
-  `);
+  `, [businessId]);
 
-  const ticketByDay = await mkReq().query(`
-    SELECT
-      CAST(createdAt AS DATE) AS day,
-      ISNULL(AVG(total), 0) AS avgTicket
+  const [ticketByDay] = await pool.query<any[]>(`
+    SELECT DATE(createdAt) AS day, IFNULL(AVG(total), 0) AS avgTicket
     FROM Orders
-    WHERE businessId = @businessId ${dateNoAlias}
-    GROUP BY CAST(createdAt AS DATE)
+    WHERE businessId = ? ${dateNoAlias}
+    GROUP BY DATE(createdAt)
     ORDER BY day ASC
-  `);
+  `, [businessId]);
 
-  const stats = periodStats.recordset[0];
+  const stats = (periodStats as any[])[0];
   return {
     todayRevenue: parseFloat(stats.periodRevenue),
     todayOrders: stats.periodOrders,
     avgTicket: parseFloat(stats.avgTicket),
-    avgDeliveryTime: avgDelivery.recordset[0].avgMinutes,
-    topProductName: topProductPeriod.recordset[0]?.name || '—',
-    salesByDay: salesByDay.recordset.map((r: any) => ({ day: r.day, orders: r.orders, revenue: parseFloat(r.revenue) })),
-    topProducts: topProducts.recordset.map((r: any) => ({ name: r.name, category: r.category, totalSold: r.totalSold, totalRevenue: parseFloat(r.totalRevenue) })),
-    revenueByPayment: revenueByPayment.recordset.map((r: any) => ({ method: r.method, count: r.count, revenue: parseFloat(r.revenue) })),
-    ordersByHour: ordersByHour.recordset.map((r: any) => ({ hour: r.hour, count: r.count })),
-    revenueByCategory: revenueByCategory.recordset.map((r: any) => ({ category: r.category, totalSold: r.totalSold, totalRevenue: parseFloat(r.totalRevenue) })),
-    ordersByChannel: ordersByChannel.recordset.map((r: any) => ({ channel: r.channel, count: r.count, revenue: parseFloat(r.revenue) })),
-    ordersByStatus: ordersByStatus.recordset.map((r: any) => ({ status: r.status, count: r.count })),
-    ticketByDay: ticketByDay.recordset.map((r: any) => ({ day: r.day, avgTicket: parseFloat(r.avgTicket) }))
+    avgDeliveryTime: (avgDelivery as any[])[0].avgMinutes,
+    topProductName: (topProductPeriod as any[])[0]?.name || '—',
+    salesByDay: (salesByDay as any[]).map((r: any) => ({ day: r.day, orders: r.orders, revenue: parseFloat(r.revenue) })),
+    topProducts: (topProducts as any[]).map((r: any) => ({ name: r.name, category: r.category, totalSold: r.totalSold, totalRevenue: parseFloat(r.totalRevenue) })),
+    revenueByPayment: (revenueByPayment as any[]).map((r: any) => ({ method: r.method, count: r.count, revenue: parseFloat(r.revenue) })),
+    ordersByHour: (ordersByHour as any[]).map((r: any) => ({ hour: r.hour, count: r.count })),
+    revenueByCategory: (revenueByCategory as any[]).map((r: any) => ({ category: r.category, totalSold: r.totalSold, totalRevenue: parseFloat(r.totalRevenue) })),
+    ordersByChannel: (ordersByChannel as any[]).map((r: any) => ({ channel: r.channel, count: r.count, revenue: parseFloat(r.revenue) })),
+    ordersByStatus: (ordersByStatus as any[]).map((r: any) => ({ status: r.status, count: r.count })),
+    ticketByDay: (ticketByDay as any[]).map((r: any) => ({ day: r.day, avgTicket: parseFloat(r.avgTicket) }))
   };
 };

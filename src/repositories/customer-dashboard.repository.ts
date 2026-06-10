@@ -1,41 +1,35 @@
-import { getPool, sql } from '../database/mssqlClient';
+import { getPool } from '../database/mysqlClient';
 import { getBusinessContext } from '../database/businessContext';
 
 function getCustomerDateFilter(period: string, alias: string = ''): string {
   const col = alias ? `${alias}.createdAt` : 'createdAt';
   switch (period) {
-    case 'day':   return `AND ${col} >= CAST(GETDATE() AS DATE)`;
-    case 'week':  return `AND ${col} >= DATEADD(DAY, -7, GETDATE())`;
-    case 'month': return `AND ${col} >= DATEADD(MONTH, -1, GETDATE())`;
-    default:      return `AND ${col} >= DATEADD(DAY, -7, GETDATE())`;
+    case 'day':   return `AND ${col} >= DATE(NOW())`;
+    case 'week':  return `AND ${col} >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
+    case 'month': return `AND ${col} >= DATE_SUB(NOW(), INTERVAL 1 MONTH)`;
+    default:      return `AND ${col} >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
   }
 }
 
 export const getCustomerAnalytics = async (period: string = 'week') => {
   const { businessId } = getBusinessContext()!;
-  const conn = await getPool();
+  const pool = getPool();
   const dateF = getCustomerDateFilter(period);
   const dateFAlias = getCustomerDateFilter(period, 'o');
 
-  const mkReq = () => {
-    const r = conn.request();
-    r.input('businessId', sql.UniqueIdentifier, businessId);
-    return r;
-  };
-
-  const kpis = await mkReq().query(`
+  const [kpis] = await pool.query<any[]>(`
     SELECT
-      (SELECT COUNT(*) FROM Customers WHERE businessId = @businessId) AS totalCustomers,
-      (SELECT COUNT(*) FROM Customers WHERE businessId = @businessId ${dateF}) AS newCustomersPeriod,
-      (SELECT COUNT(DISTINCT customerId) FROM Orders WHERE businessId = @businessId ${getCustomerDateFilter(period, 'o').replace('o.createdAt', 'createdAt')}) AS activeCustomersPeriod
-  `);
+      (SELECT COUNT(*) FROM Customers WHERE businessId = ?) AS totalCustomers,
+      (SELECT COUNT(*) FROM Customers WHERE businessId = ? ${dateF}) AS newCustomersPeriod,
+      (SELECT COUNT(DISTINCT customerId) FROM Orders WHERE businessId = ? ${dateFAlias.replace('o.createdAt', 'createdAt')}) AS activeCustomersPeriod
+  `, [businessId, businessId, businessId]);
 
-  const recurring = await mkReq().query(`
+  const [recurring] = await pool.query<any[]>(`
     SELECT COUNT(*) AS recurringCustomers
-    FROM (SELECT customerId FROM Orders WHERE businessId = @businessId GROUP BY customerId HAVING COUNT(*) > 1) t
-  `);
+    FROM (SELECT customerId FROM Orders WHERE businessId = ? GROUP BY customerId HAVING COUNT(*) > 1) t
+  `, [businessId]);
 
-  const returnRate = await mkReq().query(`
+  const [returnRate] = await pool.query<any[]>(`
     SELECT
       CASE WHEN totalActive = 0 THEN 0
         ELSE CAST(returning * 100.0 / totalActive AS DECIMAL(5,1))
@@ -46,48 +40,48 @@ export const getCustomerAnalytics = async (period: string = 'week') => {
         COUNT(DISTINCT CASE WHEN orderCount > 1 THEN customerId END) AS returning
       FROM (
         SELECT customerId, COUNT(*) AS orderCount
-        FROM Orders WHERE businessId = @businessId
+        FROM Orders WHERE businessId = ?
         GROUP BY customerId
       ) sub
     ) final
-  `);
+  `, [businessId]);
 
-  const clv = await mkReq().query(`
-    SELECT ISNULL(AVG(total), 0) AS avgCLV
-    FROM (SELECT customerId, SUM(total) AS total FROM Orders WHERE businessId = @businessId GROUP BY customerId) t
-  `);
+  const [clv] = await pool.query<any[]>(`
+    SELECT IFNULL(AVG(total), 0) AS avgCLV
+    FROM (SELECT customerId, SUM(total) AS total FROM Orders WHERE businessId = ? GROUP BY customerId) t
+  `, [businessId]);
 
-  const newByDay = await mkReq().query(`
-    SELECT CAST(createdAt AS DATE) AS day, COUNT(*) AS count
-    FROM Customers WHERE businessId = @businessId ${dateF}
-    GROUP BY CAST(createdAt AS DATE)
+  const [newByDay] = await pool.query<any[]>(`
+    SELECT DATE(createdAt) AS day, COUNT(*) AS count
+    FROM Customers WHERE businessId = ? ${dateF}
+    GROUP BY DATE(createdAt)
     ORDER BY day ASC
-  `);
+  `, [businessId]);
 
-  const newVsRecurring = await mkReq().query(`
+  const [newVsRecurring] = await pool.query<any[]>(`
     SELECT
       SUM(CASE WHEN orderCount = 1 THEN 1 ELSE 0 END) AS newCustomers,
       SUM(CASE WHEN orderCount > 1 THEN 1 ELSE 0 END) AS recurringCustomers
     FROM (
       SELECT customerId, COUNT(*) AS orderCount
-      FROM Orders WHERE businessId = @businessId
+      FROM Orders WHERE businessId = ?
       GROUP BY customerId
     ) t
-  `);
+  `, [businessId]);
 
-  const loyaltyIndex = await mkReq().query(`
+  const [loyaltyIndex] = await pool.query<any[]>(`
     SELECT
       SUM(CASE WHEN orderCount = 1 THEN 1 ELSE 0 END) AS oneOrder,
       SUM(CASE WHEN orderCount BETWEEN 2 AND 3 THEN 1 ELSE 0 END) AS twoThreeOrders,
       SUM(CASE WHEN orderCount >= 4 THEN 1 ELSE 0 END) AS fourPlusOrders
     FROM (
       SELECT customerId, COUNT(*) AS orderCount
-      FROM Orders WHERE businessId = @businessId
+      FROM Orders WHERE businessId = ?
       GROUP BY customerId
     ) t
-  `);
+  `, [businessId]);
 
-  const returnByMonth = await mkReq().query(`
+  const [returnByMonth] = await pool.query<any[]>(`
     SELECT
       m.month,
       CASE WHEN m.totalActive = 0 THEN 0
@@ -95,75 +89,76 @@ export const getCustomerAnalytics = async (period: string = 'week') => {
       END AS returnRate
     FROM (
       SELECT
-        FORMAT(o.createdAt, 'yyyy-MM') AS month,
+        DATE_FORMAT(o.createdAt, '%Y-%m') AS month,
         COUNT(DISTINCT o.customerId) AS totalActive,
         COUNT(DISTINCT CASE WHEN prev.customerId IS NOT NULL THEN o.customerId END) AS returning
       FROM Orders o
       LEFT JOIN (
         SELECT DISTINCT customerId FROM Orders
-        WHERE businessId = @businessId AND createdAt < DATEADD(MONTH, -1, GETDATE())
+        WHERE businessId = ? AND createdAt < DATE_SUB(NOW(), INTERVAL 1 MONTH)
       ) prev ON o.customerId = prev.customerId
-      WHERE o.businessId = @businessId AND o.createdAt >= DATEADD(MONTH, -6, GETDATE())
-      GROUP BY FORMAT(o.createdAt, 'yyyy-MM')
+      WHERE o.businessId = ? AND o.createdAt >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
+      GROUP BY DATE_FORMAT(o.createdAt, '%Y-%m')
     ) m
     ORDER BY m.month ASC
-  `);
+  `, [businessId, businessId]);
 
-  const growth = await mkReq().query(`
-    SELECT FORMAT(createdAt, 'yyyy-MM') AS month, COUNT(*) AS newCount
+  const [growth] = await pool.query<any[]>(`
+    SELECT DATE_FORMAT(createdAt, '%Y-%m') AS month, COUNT(*) AS newCount
     FROM Customers
-    WHERE businessId = @businessId AND createdAt >= DATEADD(MONTH, -6, GETDATE())
-    GROUP BY FORMAT(createdAt, 'yyyy-MM')
+    WHERE businessId = ? AND createdAt >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
+    GROUP BY DATE_FORMAT(createdAt, '%Y-%m')
     ORDER BY month ASC
-  `);
+  `, [businessId]);
 
-  const totalBefore = (await mkReq().query(`
+  const [totalBeforeRes] = await pool.query<any[]>(`
     SELECT COUNT(*) AS c FROM Customers
-    WHERE businessId = @businessId AND createdAt < DATEADD(MONTH, -6, GETDATE())
-  `)).recordset[0].c;
+    WHERE businessId = ? AND createdAt < DATE_SUB(NOW(), INTERVAL 6 MONTH)
+  `, [businessId]);
+  const totalBefore = (totalBeforeRes as any[])[0].c;
 
   let cumulative = totalBefore;
-  const growthData = growth.recordset.map((r: any) => {
+  const growthData = (growth as any[]).map((r: any) => {
     cumulative += r.newCount;
     return { month: r.month, total: cumulative };
   });
 
-  const topCustomers = await mkReq().query(`
-    SELECT TOP 10 c.name, SUM(o.total) AS totalSpent, COUNT(o.id) AS orderCount
+  const [topCustomers] = await pool.query<any[]>(`
+    SELECT c.name, SUM(o.total) AS totalSpent, COUNT(o.id) AS orderCount
     FROM Orders o
     INNER JOIN Customers c ON o.customerId = c.id
-    WHERE o.businessId = @businessId
+    WHERE o.businessId = ?
     GROUP BY c.name
     ORDER BY totalSpent DESC
-  `);
+    LIMIT 10
+  `, [businessId]);
 
-  const avgInterval = await mkReq().query(`
+  const [avgInterval] = await pool.query<any[]>(`
     SELECT
-      FORMAT(o2.createdAt, 'yyyy-MM') AS month,
-      AVG(DATEDIFF(DAY, o1.createdAt, o2.createdAt)) AS avgDays
+      DATE_FORMAT(createdAt, '%Y-%m') AS month,
+      AVG(TIMESTAMPDIFF(DAY, prevCreatedAt, createdAt)) AS avgDays
     FROM (
       SELECT customerId, createdAt,
         LAG(createdAt) OVER (PARTITION BY customerId ORDER BY createdAt) AS prevCreatedAt
-      FROM Orders WHERE businessId = @businessId
+      FROM Orders WHERE businessId = ?
     ) o2
-    CROSS APPLY (SELECT o2.prevCreatedAt AS createdAt) o1
-    WHERE o1.createdAt IS NOT NULL
-      AND o2.createdAt >= DATEADD(MONTH, -6, GETDATE())
-    GROUP BY FORMAT(o2.createdAt, 'yyyy-MM')
+    WHERE prevCreatedAt IS NOT NULL
+      AND createdAt >= DATE_SUB(NOW(), INTERVAL 6 MONTH)
+    GROUP BY DATE_FORMAT(createdAt, '%Y-%m')
     ORDER BY month ASC
-  `);
+  `, [businessId]);
 
-  const kpiRow = kpis.recordset[0];
-  const nvr = newVsRecurring.recordset[0];
-  const li = loyaltyIndex.recordset[0];
+  const kpiRow = (kpis as any[])[0];
+  const nvr = (newVsRecurring as any[])[0];
+  const li = (loyaltyIndex as any[])[0];
 
   return {
     totalCustomers: kpiRow.totalCustomers,
     newCustomersPeriod: kpiRow.newCustomersPeriod,
-    recurringCustomers: recurring.recordset[0].recurringCustomers,
-    returnRate: parseFloat(returnRate.recordset[0].returnRate),
-    avgCLV: parseFloat(clv.recordset[0].avgCLV),
-    newByDay: newByDay.recordset.map((r: any) => ({ day: r.day, count: r.count })),
+    recurringCustomers: (recurring as any[])[0].recurringCustomers,
+    returnRate: parseFloat((returnRate as any[])[0].returnRate),
+    avgCLV: parseFloat((clv as any[])[0].avgCLV),
+    newByDay: (newByDay as any[]).map((r: any) => ({ day: r.day, count: r.count })),
     newVsRecurring: {
       newCustomers: nvr.newCustomers || 0,
       recurringCustomers: nvr.recurringCustomers || 0
@@ -173,9 +168,9 @@ export const getCustomerAnalytics = async (period: string = 'week') => {
       twoThreeOrders: li.twoThreeOrders || 0,
       fourPlusOrders: li.fourPlusOrders || 0
     },
-    returnByMonth: returnByMonth.recordset.map((r: any) => ({ month: r.month, returnRate: parseFloat(r.returnRate) })),
+    returnByMonth: (returnByMonth as any[]).map((r: any) => ({ month: r.month, returnRate: parseFloat(r.returnRate) })),
     customerGrowth: growthData,
-    topCustomers: topCustomers.recordset.map((r: any) => ({ name: r.name, totalSpent: parseFloat(r.totalSpent), orderCount: r.orderCount })),
-    avgOrderInterval: avgInterval.recordset.map((r: any) => ({ month: r.month, avgDays: r.avgDays }))
+    topCustomers: (topCustomers as any[]).map((r: any) => ({ name: r.name, totalSpent: parseFloat(r.totalSpent), orderCount: r.orderCount })),
+    avgOrderInterval: (avgInterval as any[]).map((r: any) => ({ month: r.month, avgDays: r.avgDays }))
   };
 };
