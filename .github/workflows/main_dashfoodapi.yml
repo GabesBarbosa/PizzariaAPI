@@ -1,7 +1,4 @@
-# Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
-# More GitHub Actions for Azure: https://github.com/Azure/actions
-
-name: Build and deploy Node.js app to Azure Web App - dashfoodAPI
+name: Build and test Node.js app
 
 on:
   push:
@@ -10,11 +7,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
 
     steps:
       - uses: actions/checkout@v4
@@ -29,17 +23,3 @@ jobs:
           npm install
           npm run build --if-present
           npm run test --if-present
-
-      - name: Login to Azure
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_2D392F27555E47F886B7A0171260DAC3 }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_E390BF5C7E8F4933B0E8AAD9AB463FA7 }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_C3BDC8AD0A4F47A3BD017D383CB278B6 }}
-
-      - name: Deploy to Azure Web App
-        uses: azure/webapps-deploy@v3
-        with:
-          app-name: 'dashfoodAPI'
-          slot-name: 'Production'
-          package: .
