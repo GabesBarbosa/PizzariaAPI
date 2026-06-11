@@ -37,7 +37,7 @@ function firstName(full: string): string {
 /* ─── URL do cardápio público ─── */
 
 function buildShopUrl(slug: string, token?: string): string {
-  const base = (process.env.PUBLIC_SHOP_URL || 'https://nice-hill-08195f90f.7.azurestaticapps.net').replace(/\/$/, '');
+  const base = (process.env.PUBLIC_SHOP_URL || 'https://dashfood-rose.vercel.app').replace(/\/$/, '');
   const url = `${base}/c/${slug}`;
   return token ? `${url}?token=${token}` : url;
 }
