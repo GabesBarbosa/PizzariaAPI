@@ -19,6 +19,7 @@ app.use(express.json({ limit: '10mb' }));
 const allowedOrigins = [
   'http://localhost:4200',
   'https://dashfood.vercel.app',
+  'https://dashfood-rose.vercel.app',
   process.env.SPA_ORIGIN
 ].filter(Boolean) as string[];
 
