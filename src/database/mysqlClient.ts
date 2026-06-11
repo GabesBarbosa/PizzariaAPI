@@ -13,6 +13,7 @@ export const getPool = (): mysql.Pool => {
       waitForConnections: true,
       connectionLimit: 10,
       timezone: '+00:00',
+      ssl: { rejectUnauthorized: false },
     });
     console.log('[DB] MySQL pool created | host:', process.env.MYSQLHOST);
   }

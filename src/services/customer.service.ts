@@ -2,7 +2,9 @@ import * as customerRepo from '../repositories/customer.repository';
 import { CreateCustomerDTO, UpdateCustomerDTO } from '../dtos/customer.dto';
 
 export const createCustomer = async (data: CreateCustomerDTO) => {
-  // Business rules could go here (e.g., phone format)
+  if (data.phone) {
+    return customerRepo.upsertCustomerByPhone(data);
+  }
   return customerRepo.createCustomer(data);
 };
 

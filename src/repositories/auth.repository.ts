@@ -52,6 +52,11 @@ export const findUserById = async (id: string) => {
   return rows[0];
 };
 
+export const updateBusiness = async (id: string, name: string) => {
+  const pool = getPool();
+  await pool.query('UPDATE Businesses SET name = ? WHERE id = ?', [name, id]);
+};
+
 export const updateUser = async (id: string, data: { name?: string; email?: string; passwordHash?: string }) => {
   const pool = getPool();
   await pool.query(

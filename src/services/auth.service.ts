@@ -85,7 +85,7 @@ export const register = async (data: RegisterDTO) => {
   };
 };
 
-export const updateProfile = async (userId: string, data: { name?: string; email?: string; currentPassword?: string; newPassword?: string }) => {
+export const updateProfile = async (userId: string, data: { name?: string; email?: string; businessName?: string; currentPassword?: string; newPassword?: string }) => {
   const user = await authRepo.findUserById(userId);
   if (!user) throw Object.assign(new Error('Usuário não encontrado'), { status: 404 });
 
@@ -107,6 +107,11 @@ export const updateProfile = async (userId: string, data: { name?: string; email
 
   const updated = await authRepo.updateUser(userId, updateData);
 
+  const newBusinessName = data.businessName?.trim() || user.businessName;
+  if (data.businessName?.trim() && data.businessName.trim() !== user.businessName) {
+    await authRepo.updateBusiness(user.businessId, data.businessName.trim());
+  }
+
   const token = jwt.sign(
     { userId: updated.id, businessId: user.businessId, role: updated.role },
     JWT_SECRET,
@@ -120,7 +125,7 @@ export const updateProfile = async (userId: string, data: { name?: string; email
       name: updated.name,
       email: updated.email,
       role: updated.role,
-      businessName: user.businessName,
+      businessName: newBusinessName,
       businessSlug: user.businessSlug
     }
   };

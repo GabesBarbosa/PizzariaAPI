@@ -38,8 +38,8 @@ export const me = async (req: Request, res: Response, next: NextFunction) => {
 export const updateProfile = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const userId = (req as any).user.userId;
-    const { name, email, currentPassword, newPassword } = req.body;
-    const result = await authService.updateProfile(userId, { name, email, currentPassword, newPassword });
+    const { name, email, businessName, currentPassword, newPassword } = req.body;
+    const result = await authService.updateProfile(userId, { name, email, businessName, currentPassword, newPassword });
     res.json(result);
   } catch (err) {
     next(err);

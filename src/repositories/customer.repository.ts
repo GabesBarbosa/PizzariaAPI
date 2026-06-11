@@ -3,6 +3,11 @@ import { getBusinessContext } from '../database/businessContext';
 import { CreateCustomerDTO, UpdateCustomerDTO } from '../dtos/customer.dto';
 import { v4 as uuidv4 } from 'uuid';
 
+function normalizePhone(phone: string): string {
+  const digits = phone.replace(/\D/g, '');
+  return digits.startsWith('55') && digits.length > 11 ? digits.slice(2) : digits;
+}
+
 export const getAllCustomers = async () => {
   const { businessId } = getBusinessContext()!;
   const pool = getPool();
@@ -17,10 +22,11 @@ export const createCustomer = async (data: CreateCustomerDTO) => {
   const { businessId } = getBusinessContext()!;
   const pool = getPool();
   const id = uuidv4();
+  const phone = data.phone ? normalizePhone(data.phone) : data.phone;
   await pool.query(
     `INSERT INTO Customers (id, businessId, name, phone, address, cep, street, \`number\`, complement, neighborhood, city, uf, latitude, longitude)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, businessId, data.name, data.phone, data.address || null,
+    [id, businessId, data.name, phone, data.address || null,
      data.cep ?? null, data.street ?? null, data.number ?? null,
      data.complement ?? null, data.neighborhood ?? null,
      data.city ?? null, data.uf ?? null,
@@ -43,9 +49,10 @@ export const findCustomerById = async (id: string) => {
 export const findCustomerByPhone = async (phone: string) => {
   const { businessId } = getBusinessContext()!;
   const pool = getPool();
+  const normalized = normalizePhone(phone);
   const [rows] = await pool.query<any[]>(
-    'SELECT * FROM Customers WHERE businessId = ? AND phone = ? LIMIT 1',
-    [businessId, phone]
+    'SELECT * FROM Customers WHERE businessId = ? AND REGEXP_REPLACE(phone, "[^0-9]", "") = ? LIMIT 1',
+    [businessId, normalized]
   );
   return rows[0];
 };
@@ -64,6 +71,7 @@ export const findCustomersByNameOrPhone = async (term: string) => {
 export const updateCustomer = async (id: string, data: UpdateCustomerDTO) => {
   const { businessId } = getBusinessContext()!;
   const pool = getPool();
+  const phone = data.phone ? normalizePhone(data.phone) : data.phone;
   await pool.query(
     `UPDATE Customers SET
        name         = COALESCE(?, name),
@@ -79,7 +87,7 @@ export const updateCustomer = async (id: string, data: UpdateCustomerDTO) => {
        latitude     = COALESCE(?, latitude),
        longitude    = COALESCE(?, longitude)
      WHERE id = ? AND businessId = ?`,
-    [data.name ?? null, data.phone ?? null, data.address ?? null,
+    [data.name ?? null, phone ?? null, data.address ?? null,
      data.cep ?? null, data.street ?? null, data.number ?? null,
      data.complement ?? null, data.neighborhood ?? null,
      data.city ?? null, data.uf ?? null,

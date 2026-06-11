@@ -155,6 +155,33 @@ export const getCustomerByToken = async (req: PublicRequest, res: Response, next
   }
 };
 
+/* ─── GET /api/public/:slug/customers/lookup?phone=... ─── */
+
+export const lookupCustomerByPhone = async (req: PublicRequest, res: Response, next: NextFunction) => {
+  try {
+    const phone = typeof req.query.phone === 'string' ? req.query.phone.trim() : '';
+    if (!phone) return res.status(400).json({ message: 'Telefone é obrigatório.' });
+
+    const customer = await customerRepo.findCustomerByPhone(phone);
+    if (!customer) return res.status(404).json({ message: 'Cliente não encontrado.' });
+
+    res.json({
+      id: customer.id,
+      name: customer.name,
+      phone: customer.phone,
+      cep: customer.cep,
+      street: customer.street,
+      number: customer.number,
+      complement: customer.complement,
+      neighborhood: customer.neighborhood,
+      city: customer.city,
+      uf: customer.uf,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 /* ─── POST /api/public/:slug/customers ─── */
 
 export const postCustomer = async (req: PublicRequest, res: Response, next: NextFunction) => {

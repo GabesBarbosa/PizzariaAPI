@@ -21,8 +21,9 @@ router.get('/:slug/business',      resolvePublicBusiness, ctrl.getBusiness);
 router.get('/:slug/menu',          resolvePublicBusiness, ctrl.getMenu);
 router.get('/:slug/top-products',  resolvePublicBusiness, ctrl.getTopProducts);
 router.post('/:slug/shipping',     resolvePublicBusiness, ctrl.postShipping);
-router.get('/:slug/customers',     resolvePublicBusiness, ctrl.getCustomerByToken);
-router.post('/:slug/customers',    resolvePublicBusiness, ctrl.postCustomer);
+router.get('/:slug/customers/lookup', resolvePublicBusiness, ctrl.lookupCustomerByPhone);
+router.get('/:slug/customers',        resolvePublicBusiness, ctrl.getCustomerByToken);
+router.post('/:slug/customers',       resolvePublicBusiness, ctrl.postCustomer);
 router.post('/:slug/orders',       resolvePublicBusiness, ctrl.postOrder);
 
 export default router;
