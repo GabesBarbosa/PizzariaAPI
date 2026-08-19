@@ -43,6 +43,9 @@ export const getMenu = async (_req: PublicRequest, res: Response, next: NextFunc
     const byCategory: Record<string, any[]> = {};
     for (const p of products) {
       const cat = p.category || 'outros';
+      const stockQuantity = p.stockQuantity === null || p.stockQuantity === undefined
+        ? null
+        : Number(p.stockQuantity);
       (byCategory[cat] ||= []).push({
         id: p.id,
         name: p.name,
@@ -50,6 +53,8 @@ export const getMenu = async (_req: PublicRequest, res: Response, next: NextFunc
         price: parseFloat(p.price),
         category: cat,
         imageBase64: p.imageBase64 || null,
+        stockQuantity,
+        available: stockQuantity === null || stockQuantity > 0,
       });
     }
     res.json({ categories: byCategory });
@@ -66,7 +71,7 @@ export const getTopProducts = async (_req: PublicRequest, res: Response, next: N
     const pool = getPool();
     const [rows] = await pool.query<any[]>(`
       SELECT
-        p.id, p.name, p.description, p.price, p.category, p.imageBase64,
+        p.id, p.name, p.description, p.price, p.category, p.imageBase64, p.stockQuantity,
         SUM(oi.quantity) AS totalSold
       FROM OrderItems oi
       INNER JOIN Orders o ON oi.orderId = o.id
@@ -74,19 +79,26 @@ export const getTopProducts = async (_req: PublicRequest, res: Response, next: N
       WHERE o.businessId = ?
         AND o.createdAt >= DATE_SUB(NOW(), INTERVAL 30 DAY)
         AND o.status NOT IN ('CANCELLED')
-      GROUP BY p.id, p.name, p.description, p.price, p.category, p.imageBase64
+      GROUP BY p.id, p.name, p.description, p.price, p.category, p.imageBase64, p.stockQuantity
       ORDER BY totalSold DESC
       LIMIT 6
     `, [businessId]);
-    res.json(rows.map((p: any) => ({
-      id: p.id,
-      name: p.name,
-      description: p.description,
-      price: parseFloat(p.price),
-      category: p.category,
-      imageBase64: p.imageBase64 || null,
-      totalSold: p.totalSold,
-    })));
+    res.json(rows.map((p: any) => {
+      const stockQuantity = p.stockQuantity === null || p.stockQuantity === undefined
+        ? null
+        : Number(p.stockQuantity);
+      return {
+        id: p.id,
+        name: p.name,
+        description: p.description,
+        price: parseFloat(p.price),
+        category: p.category,
+        imageBase64: p.imageBase64 || null,
+        stockQuantity,
+        available: stockQuantity === null || stockQuantity > 0,
+        totalSold: p.totalSold,
+      };
+    }));
   } catch (err) {
     next(err);
   }

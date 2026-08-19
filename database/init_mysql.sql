@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS Products (
   price       DECIMAL(10,2) NOT NULL,
   category    VARCHAR(50) NOT NULL DEFAULT 'geral',
   imageBase64 LONGTEXT NULL,
+  -- NULL = produto sem controle de estoque (sempre disponível); 0 = esgotado
+  stockQuantity INT NULL,
   createdAt   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT FK_Products_Businesses FOREIGN KEY (businessId) REFERENCES Businesses(id)
 );

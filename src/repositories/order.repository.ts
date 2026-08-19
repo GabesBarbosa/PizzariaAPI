@@ -3,6 +3,7 @@ import { getPool } from '../database/mysqlClient';
 import { getBusinessContext } from '../database/businessContext';
 import { CreateOrderDTO, CreateOrderItemDTO } from '../dtos/order.dto';
 import { v4 as uuidv4 } from 'uuid';
+import { decrementStock, incrementStock } from './product.repository';
 
 interface ItemWithPrice {
   id: string;
@@ -37,8 +38,22 @@ async function calcItemPrice(conn: mysql.PoolConnection, it: CreateOrderItemDTO)
   return { id: uuidv4(), productId: it.productId, quantity: it.quantity, unitPrice, finalPrice, variations: variationSnapshots };
 }
 
+/** Devolve ao estoque tudo que o pedido já havia consumido. */
+async function restoreStockForOrder(conn: mysql.PoolConnection, orderId: number) {
+  const [rows] = await conn.query<any[]>(
+    'SELECT productId, quantity FROM OrderItems WHERE orderId = ? AND productId IS NOT NULL',
+    [orderId]
+  );
+  for (const row of rows) {
+    await incrementStock(conn, row.productId, row.quantity);
+  }
+}
+
 async function insertItems(conn: mysql.PoolConnection, orderId: number, items: ItemWithPrice[]) {
   for (const it of items) {
+    // Baixa de estoque na mesma transação: se faltar saldo, o pedido inteiro é revertido.
+    await decrementStock(conn, it.productId, it.quantity);
+
     await conn.query(
       'INSERT INTO OrderItems (id, orderId, productId, quantity, unitPrice, finalPrice) VALUES (?, ?, ?, ?, ?, ?)',
       [it.id, orderId, it.productId, it.quantity, it.unitPrice, it.finalPrice]
@@ -147,17 +162,48 @@ export const findOrderById = async (orderId: number) => {
 export const updateOrderStatus = async (orderId: number, status: string) => {
   const { businessId } = getBusinessContext()!;
   const pool = getPool();
-  if (status === 'DELIVERED') {
-    await pool.query(
-      'UPDATE Orders SET status = ?, deliveredAt = UTC_TIMESTAMP() WHERE id = ? AND businessId = ?',
-      [status, orderId, businessId]
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [currentRows] = await conn.query<any[]>(
+      'SELECT status FROM Orders WHERE id = ? AND businessId = ?', [orderId, businessId]
     );
-  } else {
-    await pool.query(
-      'UPDATE Orders SET status = ? WHERE id = ? AND businessId = ?',
-      [status, orderId, businessId]
-    );
+    const previousStatus = currentRows[0]?.status;
+
+    if (status === 'DELIVERED') {
+      await conn.query(
+        'UPDATE Orders SET status = ?, deliveredAt = UTC_TIMESTAMP() WHERE id = ? AND businessId = ?',
+        [status, orderId, businessId]
+      );
+    } else {
+      await conn.query(
+        'UPDATE Orders SET status = ? WHERE id = ? AND businessId = ?',
+        [status, orderId, businessId]
+      );
+    }
+
+    // Cancelar devolve as unidades ao estoque; reabrir um pedido cancelado dá baixa de novo.
+    if (status === 'CANCELLED' && previousStatus !== 'CANCELLED') {
+      await restoreStockForOrder(conn, orderId);
+    } else if (previousStatus === 'CANCELLED' && status !== 'CANCELLED') {
+      const [items] = await conn.query<any[]>(
+        'SELECT productId, quantity FROM OrderItems WHERE orderId = ? AND productId IS NOT NULL',
+        [orderId]
+      );
+      for (const item of items) {
+        await decrementStock(conn, item.productId, item.quantity);
+      }
+    }
+
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
   }
+
   const [rows] = await pool.query<any[]>('SELECT * FROM Orders WHERE id = ?', [orderId]);
   return rows[0];
 };
@@ -168,6 +214,14 @@ export const deleteOrder = async (orderId: number) => {
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
+
+    // Pedido cancelado já devolveu o estoque em updateOrderStatus.
+    const [statusRows] = await conn.query<any[]>(
+      'SELECT status FROM Orders WHERE id = ? AND businessId = ?', [orderId, businessId]
+    );
+    if (statusRows[0] && statusRows[0].status !== 'CANCELLED') {
+      await restoreStockForOrder(conn, orderId);
+    }
 
     await conn.query(`
       DELETE oiv FROM OrderItemVariations oiv
@@ -198,6 +252,9 @@ export const updateOrder = async (orderId: number, data: CreateOrderDTO) => {
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
+
+    // Devolve o que os itens antigos reservaram; insertItems dá baixa nos novos.
+    await restoreStockForOrder(conn, orderId);
 
     await conn.query(`
       DELETE oiv FROM OrderItemVariations oiv

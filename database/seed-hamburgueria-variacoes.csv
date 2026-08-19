@@ -1,0 +1,33 @@
+appliesTo,name,type,priceModifier
+category:Lanches,Bacon extra,addon,6.00
+category:Lanches,Queijo extra,addon,4.00
+category:Lanches,Hambúrguer extra 160g,addon,12.00
+category:Lanches,Cheddar cremoso,addon,5.00
+category:Lanches,Catupiry,addon,5.00
+category:Lanches,Ovo frito,addon,3.00
+category:Lanches,Cebola caramelizada,addon,4.00
+category:Lanches,Cebola crispy,addon,4.00
+category:Lanches,Salada completa,addon,2.00
+category:Lanches,Molho barbecue,addon,2.50
+category:Lanches,Sem cebola,removal,0.00
+category:Lanches,Sem tomate,removal,0.00
+category:Lanches,Sem alface,removal,0.00
+category:Lanches,Sem maionese,removal,0.00
+category:Lanches,Sem picles,removal,0.00
+category:Porções,Cheddar cremoso,addon,7.00
+category:Porções,Bacon crocante,addon,7.00
+category:Porções,Molho extra,addon,3.00
+product:Coca-Cola,Lata 350ml,size,0.00
+product:Coca-Cola,Garrafa 600ml,size,3.00
+product:Coca-Cola,Garrafa 2L,size,7.00
+product:Coca-Cola Zero,Lata 350ml,size,0.00
+product:Coca-Cola Zero,Garrafa 600ml,size,3.00
+product:Coca-Cola Zero,Garrafa 2L,size,7.00
+product:Guaraná Antarctica,Lata 350ml,size,0.00
+product:Guaraná Antarctica,Garrafa 600ml,size,3.00
+product:Guaraná Antarctica,Garrafa 2L,size,6.50
+product:Sprite,Lata 350ml,size,0.00
+product:Sprite,Garrafa 600ml,size,3.00
+product:Batata Frita,Pequena 150g,size,-6.00
+product:Batata Frita,Média 250g,size,0.00
+product:Batata Frita,Grande 400g,size,9.00

@@ -1,0 +1,41 @@
+name,description,price,category
+X-Burger,"Pão brioche, hambúrguer 160g, queijo prato, alface, tomate e maionese da casa",22.90,Lanches
+X-Salada,"Pão brioche, hambúrguer 160g, queijo prato, alface, tomate, cebola roxa e maionese verde",24.90,Lanches
+X-Bacon,"Pão brioche, hambúrguer 160g, queijo cheddar, bacon crocante e maionese defumada",27.90,Lanches
+X-Egg,"Pão brioche, hambúrguer 160g, queijo prato, ovo frito, alface e tomate",25.90,Lanches
+X-Calabresa,"Pão brioche, hambúrguer 160g, calabresa fatiada, queijo prato e cebola caramelizada",26.90,Lanches
+X-Frango,"Pão brioche, filé de frango grelhado, queijo prato, alface, tomate e maionese",25.90,Lanches
+X-Tudo,"Pão brioche, dois hambúrgueres 160g, queijo prato, cheddar, bacon, ovo, presunto, alface, tomate e batata palha",34.90,Lanches
+X-Costela,"Pão australiano, costela desfiada 180g, queijo prato, cebola caramelizada e barbecue",32.90,Lanches
+Cheddar Melt,"Pão brioche, hambúrguer 160g, cheddar cremoso, bacon e cebola crispy",31.90,Lanches
+Smash Duplo,"Pão de batata, dois smash burgers 90g, queijo cheddar e molho especial",29.90,Lanches
+Burger Vegetariano,"Pão integral, hambúrguer de grão-de-bico, queijo branco, rúcula, tomate seco e maionese de ervas",26.90,Lanches
+Kids Burger,"Pão brioche, hambúrguer 90g, queijo prato e batata frita porção pequena",18.90,Lanches
+Combo X-Burger,"X-Burger + batata frita 150g + refrigerante lata 350ml",32.90,Combos
+Combo X-Bacon,"X-Bacon + batata frita 150g + refrigerante lata 350ml",37.90,Combos
+Combo X-Tudo,"X-Tudo + batata frita 250g + refrigerante lata 350ml",44.90,Combos
+Combo Smash Duplo,"Smash Duplo + onion rings + refrigerante lata 350ml",39.90,Combos
+Batata Frita,"Porção de batata frita crocante 250g com sal e alecrim",18.90,Porções
+Batata Cheddar Bacon,"Batata frita 250g coberta com cheddar cremoso e bacon crocante",28.90,Porções
+Onion Rings,"Anéis de cebola empanados 200g com molho barbecue",22.90,Porções
+Nuggets,"10 unidades de nuggets de frango empanados com molho da casa",19.90,Porções
+Frango a Passarinho,"Porção de frango a passarinho 500g com alho frito e limão",34.90,Porções
+Isca de Calabresa,"Calabresa acebolada 400g com pão de alho",29.90,Porções
+Mandioca Frita,"Porção de mandioca frita 350g com maionese da casa",21.90,Porções
+Coca-Cola,Refrigerante Coca-Cola gelado,7.00,Bebidas
+Coca-Cola Zero,Refrigerante Coca-Cola Zero gelado,7.00,Bebidas
+Guaraná Antarctica,Refrigerante Guaraná Antarctica gelado,6.50,Bebidas
+Sprite,Refrigerante Sprite gelado,6.50,Bebidas
+Suco de Laranja,Suco natural de laranja 500ml,9.90,Bebidas
+Suco de Maracujá,Suco natural de maracujá 500ml,9.90,Bebidas
+Limonada Suíça,Limonada suíça 500ml,10.90,Bebidas
+Água Mineral,Água mineral sem gás 500ml,4.00,Bebidas
+Água com Gás,Água mineral com gás 500ml,5.00,Bebidas
+Cerveja Heineken,Cerveja Heineken long neck 330ml,12.90,Bebidas
+Cerveja Budweiser,Cerveja Budweiser long neck 330ml,9.90,Bebidas
+Milkshake de Chocolate,Milkshake de chocolate 400ml com chantilly,16.90,Bebidas
+Milkshake de Morango,Milkshake de morango 400ml com chantilly,16.90,Bebidas
+Petit Gateau,Bolo de chocolate com recheio cremoso e sorvete de creme,19.90,Sobremesas
+Brownie com Sorvete,Brownie de chocolate meio amargo com sorvete de creme e calda quente,17.90,Sobremesas
+Pudim de Leite,Pudim de leite condensado com calda de caramelo,12.90,Sobremesas
+Açaí na Tigela,Açaí 400ml com banana e granola,21.90,Sobremesas

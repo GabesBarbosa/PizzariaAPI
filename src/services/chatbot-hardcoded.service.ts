@@ -128,7 +128,8 @@ async function loadProducts(businessId: string): Promise<any[]> {
   const now = Date.now();
   const cached = productsCacheMap.get(businessId);
   if (!cached || now - cached.cacheTime > PRODUCT_CACHE_TTL) {
-    const products = await productRepo.getAllProducts();
+    // Esgotados ficam fora do cardápio do bot — não há como o cliente pedir o que não tem.
+    const products = (await productRepo.getAllProducts()).filter(inStock);
     productsCacheMap.set(businessId, { products, cacheTime: now });
     return products;
   }
@@ -144,6 +145,11 @@ async function loadConfig(businessId: string): Promise<ChatbotConfig> {
     return config;
   }
   return cached.config;
+}
+
+/** stockQuantity NULL = produto sem controle de estoque; 0 = esgotado. */
+function inStock(p: any): boolean {
+  return p.stockQuantity === null || p.stockQuantity === undefined || Number(p.stockQuantity) > 0;
 }
 
 function getCategories(products: any[]): string[] {

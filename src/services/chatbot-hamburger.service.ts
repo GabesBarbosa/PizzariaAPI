@@ -127,7 +127,8 @@ async function loadProducts(businessId: string) {
   const now = Date.now();
   const c = productsCacheMap.get(businessId);
   if (c && now - c.cacheTime < PRODUCT_CACHE_TTL) return c.products;
-  const products = await productRepo.getAllProducts();
+  // Esgotados ficam fora do cardápio do bot — não há como o cliente pedir o que não tem.
+  const products = (await productRepo.getAllProducts()).filter(inStock);
   productsCacheMap.set(businessId, { products, cacheTime: now });
   return products;
 }
@@ -148,6 +149,11 @@ async function loadVariations(productId: string) {
   const variations = await productRepo.getVariationsByProduct(productId);
   variationsCacheMap.set(productId, { variations, cacheTime: now });
   return variations;
+}
+
+/** stockQuantity NULL = produto sem controle de estoque; 0 = esgotado. */
+function inStock(p: any): boolean {
+  return p.stockQuantity === null || p.stockQuantity === undefined || Number(p.stockQuantity) > 0;
 }
 
 function getCategories(products: any[]) {

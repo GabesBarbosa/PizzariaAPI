@@ -49,6 +49,26 @@ export const deleteProduct = async (req: Request, res: Response, next: NextFunct
   }
 };
 
+export const updateStock = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const updated = await productService.updateStock(req.params.id, req.body);
+    if (!updated) return res.status(404).json({ message: 'Produto não encontrado' });
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const listLowStock = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const threshold = parseInt(String(req.query.threshold ?? '0'), 10);
+    const products = await productService.listLowStock(Number.isNaN(threshold) ? 0 : threshold);
+    res.json(products);
+  } catch (err) {
+    next(err);
+  }
+};
+
 export const listVariations = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const variations = await productService.listVariations(req.params.id);

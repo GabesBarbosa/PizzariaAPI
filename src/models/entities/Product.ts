@@ -7,6 +7,8 @@ export interface Product {
   description?: string;
   price: number;
   category: string;
+  /** NULL = produto sem controle de estoque (sempre disponível); 0 = esgotado. */
+  stockQuantity?: number | null;
   createdAt?: Date;
   variations?: ProductVariation[];
 }
