@@ -233,10 +233,25 @@ export async function initWhatsApp(businessId: string): Promise<void> {
 
           let resolvedJid = normalizedJid;
           if (normalizedJid.endsWith('@lid')) {
+            // 1) Resolvedor nativo do Baileys (persistido no auth state, alimentado pelo
+            //    próprio protocolo Signal) — mais confiável que o cache local abaixo, que só
+            //    enche quando o evento de sincronização de contatos dispara (nem sempre acontece).
+            let fromSignal: string | null = null;
+            try {
+              fromSignal = (await state.socket?.signalRepository?.lidMapping?.getPNForLID(normalizedJid)) ?? null;
+            } catch (err: any) {
+              logger.warn(`[WhatsApp] Falha ao resolver LID via signalRepository: ${err.message}`);
+            }
+
             const fromCache = state.lidCache.get(normalizedJid);
             const fromContacts = (state.socket as any)?.contacts?.[normalizedJid]?.id;
-            resolvedJid = fromCache ?? fromContacts ?? normalizedJid;
-            logger.info(`[WhatsApp] LID detectado: ${normalizedJid} | cache: ${fromCache ?? 'miss'} | contacts: ${fromContacts ?? 'miss'} | resolvido: ${resolvedJid}`);
+            resolvedJid = fromSignal ?? fromCache ?? fromContacts ?? normalizedJid;
+
+            if (resolvedJid !== normalizedJid) {
+              state.lidCache.set(normalizedJid, resolvedJid); // memoriza pra não bater no signalRepository de novo
+            }
+
+            logger.info(`[WhatsApp] LID detectado: ${normalizedJid} | signalRepository: ${fromSignal ?? 'miss'} | cache: ${fromCache ?? 'miss'} | contacts: ${fromContacts ?? 'miss'} | resolvido: ${resolvedJid}`);
           }
 
           const phone = jidNormalizedUser(resolvedJid);

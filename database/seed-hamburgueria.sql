@@ -16,7 +16,7 @@ SET @businessId = (SELECT businessId FROM Users WHERE email = 'owner@owner.com' 
 -- CONFIRA ESTE RESULTADO ANTES DE SEGUIR.
 -- Se vier NULL, o e-mail não existe — pare aqui e rode:
 --   SELECT email FROM Users;
-SELECT @businessId AS businessId,
+  SELECT @businessId AS businessId,
        (SELECT name FROM Businesses WHERE id = @businessId) AS negocio;
 
 -- ─── 2. Produtos ───────────────────────────────────────────

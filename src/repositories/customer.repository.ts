@@ -3,7 +3,13 @@ import { getBusinessContext } from '../database/businessContext';
 import { CreateCustomerDTO, UpdateCustomerDTO } from '../dtos/customer.dto';
 import { v4 as uuidv4 } from 'uuid';
 
-function normalizePhone(phone: string): string {
+/**
+ * Normaliza um telefone brasileiro pro formato salvo no banco: só DDD + número, sem +55.
+ * O comprimento (>11) é o que evita cortar por engano o DDD 55 (Santa Maria/RS) de quem
+ * não tem código de país no número — sem essa checagem, "55991234567" (DDD 55, 11 dígitos)
+ * vira "991234567" (perde o DDD). É a mesma função usada em toda a base — não duplicar.
+ */
+export function normalizePhone(phone: string): string {
   const digits = phone.replace(/\D/g, '');
   return digits.startsWith('55') && digits.length > 11 ? digits.slice(2) : digits;
 }

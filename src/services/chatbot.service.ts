@@ -1,7 +1,8 @@
 import * as customerRepo from '../repositories/customer.repository';
-import { getChatbotEnabled, getCurrentBusinessInfo } from '../repositories/settings.repository';
+import { getChatbotEnabled, getChatbotMode, getCurrentBusinessInfo } from '../repositories/settings.repository';
 import { getBusinessContext } from '../database/businessContext';
 import { createShopToken } from './shop-token.service';
+import { handleAiMessage } from './chatbot-ai.service';
 import logger from '../utils/logger';
 
 /* ─── Cooldown por (businessId, phone) para evitar spam de boas-vindas ─── */
@@ -26,8 +27,7 @@ function shouldGreet(businessId: string, phone: string): boolean {
 function cleanPhone(raw: string): string {
   // JID do Baileys: "5511910731832:7@s.whatsapp.net" → 11910731832
   const base = raw.split('@')[0].split(':')[0];
-  const digits = base.replace(/\D/g, '');
-  return digits.startsWith('55') ? digits.slice(2) : digits;
+  return customerRepo.normalizePhone(base);
 }
 
 function firstName(full: string): string {
@@ -44,7 +44,7 @@ function buildShopUrl(slug: string, token?: string): string {
 
 /* ─── Ponto de entrada (mantém assinatura antiga) ─── */
 
-export async function handleMessage(rawPhone: string, _body: string): Promise<string> {
+export async function handleMessage(rawPhone: string, body: string): Promise<string> {
   const enabled = await getChatbotEnabled();
   if (!enabled) return '';
 
@@ -53,6 +53,13 @@ export async function handleMessage(rawPhone: string, _body: string): Promise<st
 
   const phone = cleanPhone(rawPhone);
   if (!phone) return '';
+
+  // Modo IA: atendente conversacional (Claude) responde toda mensagem, sem o
+  // cooldown de saudação abaixo — esse cooldown é só pra não repetir o "oi fixo".
+  const mode = await getChatbotMode();
+  if (mode === 'ai') {
+    return handleAiMessage(phone, body);
+  }
 
   if (!shouldGreet(ctx.businessId, phone)) return '';
 

@@ -178,6 +178,17 @@ export const getVariationsByProduct = async (productId: string) => {
   return rows;
 };
 
+/** Todas as variações do negócio, pra anexar aos produtos do cardápio numa única query. */
+export const getAllVariationsForBusiness = async () => {
+  const { businessId } = getBusinessContext()!;
+  const pool = getPool();
+  const [rows] = await pool.query<any[]>(
+    'SELECT * FROM ProductVariations WHERE businessId = ? ORDER BY createdAt ASC',
+    [businessId]
+  );
+  return rows;
+};
+
 export const createVariation = async (productId: string, data: CreateVariationDTO) => {
   const { businessId } = getBusinessContext()!;
   const pool = getPool();

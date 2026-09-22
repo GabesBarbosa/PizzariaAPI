@@ -39,7 +39,12 @@ export const getBusiness = async (req: PublicRequest, res: Response, next: NextF
 
 export const getMenu = async (_req: PublicRequest, res: Response, next: NextFunction) => {
   try {
-    const products = await productRepo.getAllProducts();
+    const [products, variations] = await Promise.all([
+      productRepo.getAllProducts(),
+      productRepo.getAllVariationsForBusiness(),
+    ]);
+    const variationsByProduct = groupVariationsByProduct(variations);
+
     const byCategory: Record<string, any[]> = {};
     for (const p of products) {
       const cat = p.category || 'outros';
@@ -55,6 +60,7 @@ export const getMenu = async (_req: PublicRequest, res: Response, next: NextFunc
         imageBase64: p.imageBase64 || null,
         stockQuantity,
         available: stockQuantity === null || stockQuantity > 0,
+        variations: variationsByProduct.get(p.id) || [],
       });
     }
     res.json({ categories: byCategory });
@@ -83,6 +89,10 @@ export const getTopProducts = async (_req: PublicRequest, res: Response, next: N
       ORDER BY totalSold DESC
       LIMIT 6
     `, [businessId]);
+
+    const variations = await productRepo.getAllVariationsForBusiness();
+    const variationsByProduct = groupVariationsByProduct(variations);
+
     res.json(rows.map((p: any) => {
       const stockQuantity = p.stockQuantity === null || p.stockQuantity === undefined
         ? null
@@ -97,6 +107,7 @@ export const getTopProducts = async (_req: PublicRequest, res: Response, next: N
         stockQuantity,
         available: stockQuantity === null || stockQuantity > 0,
         totalSold: p.totalSold,
+        variations: variationsByProduct.get(p.id) || [],
       };
     }));
   } catch (err) {
@@ -204,7 +215,7 @@ export const postCustomer = async (req: PublicRequest, res: Response, next: Next
     const isTableMode = !phone && custTableNumber;
     const resolvedPhone = isTableMode
       ? `mesa_${custTableNumber}`
-      : (phone && typeof phone === 'string' ? normalizePhone(phone) : null);
+      : (phone && typeof phone === 'string' ? customerRepo.normalizePhone(phone) : null);
 
     if (!resolvedPhone) {
       return res.status(400).json({ message: 'Telefone é obrigatório.' });
@@ -292,7 +303,19 @@ export const postOrder = async (req: PublicRequest, res: Response, next: NextFun
 
 /* ─── Helpers ─── */
 
-function normalizePhone(phone: string): string {
-  const digits = phone.replace(/\D/g, '');
-  return digits.startsWith('55') ? digits.slice(2) : digits;
+/** Agrupa as variações (já filtradas por negócio) por productId, no formato exposto ao cardápio público. */
+function groupVariationsByProduct(variations: any[]): Map<string, any[]> {
+  const map = new Map<string, any[]>();
+  for (const v of variations) {
+    const list = map.get(v.productId) || [];
+    list.push({
+      id: v.id,
+      name: v.name,
+      type: v.type,
+      priceModifier: parseFloat(v.priceModifier),
+    });
+    map.set(v.productId, list);
+  }
+  return map;
 }
+
