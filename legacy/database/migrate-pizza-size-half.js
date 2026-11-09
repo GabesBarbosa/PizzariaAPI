@@ -1,6 +1,7 @@
 const sql = require('mssql');
+require('dotenv').config();
 const config = {
-  server: 'localhost', port: 1433, user: 'sa', password: 'Larissa7@',
+  server: 'localhost', port: 1433, user: 'sa', password: process.env.DB_PASSWORD,
   database: 'Pizzaria', options: { encrypt: false, trustServerCertificate: true }
 };
 async function run() {

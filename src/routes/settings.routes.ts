@@ -17,5 +17,7 @@ router.get('/delivery-zones',    settingsCtrl.getZones);
 router.put('/delivery-zones',    settingsCtrl.updateZones);
 router.get('/tables',            settingsCtrl.getTables);
 router.put('/tables',            settingsCtrl.updateTables);
+router.get('/opening-hours',     settingsCtrl.getOpeningHoursCtrl);
+router.put('/opening-hours',     settingsCtrl.updateOpeningHours);
 
 export default router;

@@ -34,7 +34,8 @@ export const getStats = async (period: string = 'week') => {
   `, [businessId, businessId, businessId, businessId, businessId]);
 
   const [recentOrders] = await pool.query<any[]>(`
-    SELECT o.id, o.total, o.status, o.createdAt, c.name AS customerName
+    SELECT o.id, o.total, o.status, o.createdAt, o.tableNumber,
+           COALESCE(c.name, CONCAT('Mesa ', o.tableNumber)) AS customerName
     FROM Orders o
     LEFT JOIN Customers c ON o.customerId = c.id
     WHERE o.businessId = ? ${getDateFilter(period)}
@@ -196,5 +197,73 @@ export const getAnalytics = async (period: string = 'week') => {
     ordersByChannel: (ordersByChannel as any[]).map((r: any) => ({ channel: r.channel, count: r.count, revenue: parseFloat(r.revenue) })),
     ordersByStatus: (ordersByStatus as any[]).map((r: any) => ({ status: r.status, count: r.count })),
     ticketByDay: (ticketByDay as any[]).map((r: any) => ({ day: r.day, avgTicket: parseFloat(r.avgTicket) }))
+  };
+};
+
+/* ─── Exportação de relatórios (RF22 / RF25) ───
+   `fromUtc` e `toUtc` já vêm convertidos para UTC (intervalo [fromUtc, toUtc)). */
+
+export const getOrdersForExport = async (fromUtc: Date, toUtc: Date) => {
+  const { businessId } = getBusinessContext()!;
+  const pool = getPool();
+  const [rows] = await pool.query<any[]>(`
+    SELECT o.id, o.createdAt,
+           COALESCE(c.name, CONCAT('Mesa ', o.tableNumber)) AS cliente,
+           o.channel, o.status, o.paymentMethod, o.deliveryFee, o.total
+    FROM Orders o
+    LEFT JOIN Customers c ON c.id = o.customerId
+    WHERE o.businessId = ? AND o.createdAt >= ? AND o.createdAt < ?
+    ORDER BY o.createdAt
+  `, [businessId, fromUtc, toUtc]);
+  return rows;
+};
+
+/** Totais do período para o relatório de impressão. Pedidos cancelados não entram no faturamento. */
+export const getExportSummary = async (fromUtc: Date, toUtc: Date) => {
+  const { businessId } = getBusinessContext()!;
+  const pool = getPool();
+  const range = [businessId, fromUtc, toUtc];
+
+  const [[totals]] = await pool.query<any[]>(`
+    SELECT
+      COUNT(CASE WHEN status <> 'CANCELLED' THEN 1 END)               AS orders,
+      IFNULL(SUM(CASE WHEN status <> 'CANCELLED' THEN total END), 0)  AS revenue,
+      IFNULL(SUM(CASE WHEN status <> 'CANCELLED' THEN deliveryFee END), 0) AS deliveryFees,
+      COUNT(CASE WHEN status = 'CANCELLED' THEN 1 END)                AS cancelledOrders,
+      IFNULL(SUM(CASE WHEN status = 'CANCELLED' THEN total END), 0)   AS cancelledTotal
+    FROM Orders
+    WHERE businessId = ? AND createdAt >= ? AND createdAt < ?
+  `, range);
+
+  const [topProducts] = await pool.query<any[]>(`
+    SELECT p.name, SUM(oi.quantity) AS quantity, SUM(oi.quantity * oi.finalPrice) AS revenue
+    FROM OrderItems oi
+    INNER JOIN Orders o   ON o.id = oi.orderId
+    INNER JOIN Products p ON p.id = oi.productId
+    WHERE o.businessId = ? AND o.createdAt >= ? AND o.createdAt < ? AND o.status <> 'CANCELLED'
+    GROUP BY p.id, p.name
+    ORDER BY quantity DESC
+    LIMIT 10
+  `, range);
+
+  const [payments] = await pool.query<any[]>(`
+    SELECT IFNULL(paymentMethod, 'nao_informado') AS method, COUNT(*) AS orders, SUM(total) AS revenue
+    FROM Orders
+    WHERE businessId = ? AND createdAt >= ? AND createdAt < ? AND status <> 'CANCELLED'
+    GROUP BY IFNULL(paymentMethod, 'nao_informado')
+    ORDER BY revenue DESC
+  `, range);
+
+  const orders = Number(totals.orders);
+  const revenue = parseFloat(totals.revenue);
+  return {
+    orders,
+    revenue,
+    avgTicket: orders ? Math.round((revenue / orders) * 100) / 100 : 0,
+    deliveryFees: parseFloat(totals.deliveryFees),
+    cancelledOrders: Number(totals.cancelledOrders),
+    cancelledTotal: parseFloat(totals.cancelledTotal),
+    topProducts: (topProducts as any[]).map(p => ({ name: p.name, quantity: Number(p.quantity), revenue: parseFloat(p.revenue) })),
+    payments: (payments as any[]).map(p => ({ method: p.method, orders: Number(p.orders), revenue: parseFloat(p.revenue) })),
   };
 };

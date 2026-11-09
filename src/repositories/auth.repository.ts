@@ -73,3 +73,46 @@ export const updateUser = async (id: string, data: { name?: string; email?: stri
   );
   return rows[0];
 };
+
+/* ─── Recuperação de senha (RF05) ─── */
+
+export const createPasswordReset = async (userId: string, tokenHash: string, minutesValid: number) => {
+  const pool = getPool();
+  // Datas calculadas no próprio MySQL em UTC, para não depender do fuso do servidor da API.
+  await pool.query(
+    `INSERT INTO PasswordResets (id, userId, tokenHash, expiresAt)
+     VALUES (?, ?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? MINUTE))`,
+    [uuidv4(), userId, tokenHash, minutesValid]
+  );
+};
+
+/** Token existe, não foi usado e não expirou. */
+export const findValidReset = async (tokenHash: string) => {
+  const pool = getPool();
+  const [rows] = await pool.query<any[]>(
+    `SELECT id, userId FROM PasswordResets
+     WHERE tokenHash = ? AND usedAt IS NULL AND expiresAt > UTC_TIMESTAMP()
+     LIMIT 1`,
+    [tokenHash]
+  );
+  return rows[0] as { id: string; userId: string } | undefined;
+};
+
+/** Marca como usado. Retorna false se outro pedido já usou o token antes (corrida). */
+export const markResetUsed = async (id: string): Promise<boolean> => {
+  const pool = getPool();
+  const [res] = await pool.query(
+    'UPDATE PasswordResets SET usedAt = UTC_TIMESTAMP() WHERE id = ? AND usedAt IS NULL',
+    [id]
+  );
+  return (res as any).affectedRows > 0;
+};
+
+/** Ao pedir um link novo, os anteriores do mesmo usuário deixam de valer. */
+export const invalidateUserResets = async (userId: string) => {
+  const pool = getPool();
+  await pool.query(
+    'UPDATE PasswordResets SET usedAt = UTC_TIMESTAMP() WHERE userId = ? AND usedAt IS NULL',
+    [userId]
+  );
+};

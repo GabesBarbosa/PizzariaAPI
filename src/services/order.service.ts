@@ -16,13 +16,15 @@ export const createOrder = async (data: CreateOrderDTO) => {
   const order = await orderRepo.createOrder(data);
 
   try {
+    const { businessId } = getBusinessContext()!;
     broadcast('new-order', {
       id: order.id,
       customerName: customer?.name ?? (data.tableNumber ? `Mesa ${data.tableNumber}` : 'Cliente'),
       total: order.total,
       itemCount: order.items ? order.items.reduce((s: number, it: any) => s + it.quantity, 0) : 0,
       channel: data.channel || 'web',
-    });
+      tableNumber: data.tableNumber ?? null,
+    }, businessId);
   } catch (err) {
     logger.warn('[Notification] failed to broadcast new-order: ' + (err as Error).message);
   }

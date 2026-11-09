@@ -86,10 +86,11 @@ export const createOrder = async (data: CreateOrderDTO) => {
     const grandTotal = Math.round((itemsTotal + deliveryFee) * 100) / 100;
 
     const [orderResult] = await conn.query(
-      `INSERT INTO Orders (businessId, customerId, total, status, paymentMethod, deliveryAddress, notes, deliveryFee, channel)
-       VALUES (?, ?, ?, 'RECEIVED', ?, ?, ?, ?, ?)`,
+      `INSERT INTO Orders (businessId, customerId, total, status, paymentMethod, deliveryAddress, notes, deliveryFee, channel, tableNumber)
+       VALUES (?, ?, ?, 'RECEIVED', ?, ?, ?, ?, ?, ?)`,
       [businessId, data.customerId ?? null, grandTotal, data.paymentMethod || null,
-       data.deliveryAddress || null, data.notes || null, deliveryFee, data.channel || 'balcao']
+       data.deliveryAddress || null, data.notes || null, deliveryFee, data.channel || 'balcao',
+       data.tableNumber ?? null]
     );
     const orderId: number = (orderResult as any).insertId;
 

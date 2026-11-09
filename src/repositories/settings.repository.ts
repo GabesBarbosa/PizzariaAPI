@@ -1,6 +1,7 @@
 import { getPool } from '../database/mysqlClient';
 import { getBusinessContext } from '../database/businessContext';
 import logger from '../utils/logger';
+import type { OpeningHours } from '../utils/opening-hours';
 
 const DEFAULT_DELIVERY_FEE = 5;
 
@@ -295,4 +296,19 @@ export const getCurrentBusinessInfo = async (): Promise<PublicBusinessInfo | nul
     logger.warn(`[Settings] getCurrentBusinessInfo falhou: ${err.message}`);
     return null;
   }
+};
+
+/* ─── Horário de funcionamento (RF27) ─── */
+
+export const getOpeningHours = async (): Promise<OpeningHours | null> => {
+  try {
+    const raw = await getSetting('opening_hours');
+    return raw ? (JSON.parse(raw) as OpeningHours) : null;
+  } catch {
+    return null;
+  }
+};
+
+export const setOpeningHours = async (h: OpeningHours): Promise<void> => {
+  await setSetting('opening_hours', JSON.stringify(h));
 };

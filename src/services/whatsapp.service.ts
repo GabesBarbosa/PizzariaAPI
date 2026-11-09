@@ -11,7 +11,8 @@ import QRCode from 'qrcode';
 import fs from 'fs';
 import path from 'path';
 import logger from '../utils/logger';
-import { handleMessage } from './chatbot.service';
+import { handleMessage, cleanPhone } from './chatbot.service';
+import { renewHandoff } from './handoff.service';
 import { businessStorage } from '../database/businessContext';
 import { broadcast } from './notification.service';
 
@@ -32,6 +33,47 @@ interface BusinessWhatsAppState {
   lidCache: Map<string, string>;
   // Grace period antes de reportar desconexão ao frontend
   disconnectTimer: ReturnType<typeof setTimeout> | null;
+  // IDs das mensagens enviadas pelo bot. Mensagens "fromMe" fora desse Set foram
+  // digitadas pelo dono no celular (usado para manter o modo atendente humano).
+  botSentIds: Set<string>;
+}
+
+const BOT_SENT_TTL = 10 * 60 * 1000;
+// O Baileys pode emitir o evento da própria mensagem antes de sendMessage() devolver o ID,
+// então a checagem de "foi o bot ou o dono?" espera um pouco.
+const OWN_MESSAGE_CHECK_DELAY = 3000;
+
+function rememberBotMessage(state: BusinessWhatsAppState, id: string | null | undefined): void {
+  if (!id) return;
+  state.botSentIds.add(id);
+  setTimeout(() => state.botSentIds.delete(id), BOT_SENT_TTL);
+}
+
+/** Resolve um JID (inclusive @lid) para o JID com o número real do contato. */
+async function resolveContactJid(state: BusinessWhatsAppState, jid: string): Promise<string> {
+  const normalizedJid = jidNormalizedUser(jid);
+  if (!normalizedJid.endsWith('@lid')) return normalizedJid;
+
+  // 1) Resolvedor nativo do Baileys (persistido no auth state, alimentado pelo
+  //    próprio protocolo Signal) — mais confiável que o cache local abaixo, que só
+  //    enche quando o evento de sincronização de contatos dispara (nem sempre acontece).
+  let fromSignal: string | null = null;
+  try {
+    fromSignal = (await state.socket?.signalRepository?.lidMapping?.getPNForLID(normalizedJid)) ?? null;
+  } catch (err: any) {
+    logger.warn(`[WhatsApp] Falha ao resolver LID via signalRepository: ${err.message}`);
+  }
+
+  const fromCache = state.lidCache.get(normalizedJid);
+  const fromContacts = (state.socket as any)?.contacts?.[normalizedJid]?.id;
+  const resolvedJid = fromSignal ?? fromCache ?? fromContacts ?? normalizedJid;
+
+  if (resolvedJid !== normalizedJid) {
+    state.lidCache.set(normalizedJid, resolvedJid); // memoriza pra não bater no signalRepository de novo
+  }
+
+  logger.info(`[WhatsApp] LID detectado: ${normalizedJid} | signalRepository: ${fromSignal ?? 'miss'} | cache: ${fromCache ?? 'miss'} | contacts: ${fromContacts ?? 'miss'} | resolvido: ${resolvedJid}`);
+  return resolvedJid;
 }
 
 const MAX_RETRIES = 5;
@@ -49,6 +91,7 @@ function getState(businessId: string): BusinessWhatsAppState {
       retryCount: 0,
       lidCache: new Map(),
       disconnectTimer: null,
+      botSentIds: new Set(),
     };
     businessClients.set(businessId, state);
   }
@@ -144,7 +187,7 @@ export async function initWhatsApp(businessId: string): Promise<void> {
         state.retryCount = 0;
         try {
           const qrImage = await QRCode.toDataURL(qr, { width: 280, margin: 2 });
-          broadcast('whatsapp-status', { businessId, connected: false, qrCode: qrImage });
+          broadcast('whatsapp-status', { businessId, connected: false, qrCode: qrImage }, businessId);
         } catch { /* ignora */ }
       }
 
@@ -159,7 +202,7 @@ export async function initWhatsApp(businessId: string): Promise<void> {
         state.initializing = false;
         state.retryCount = 0;
         logger.info(`[WhatsApp:${businessId}] Conectado com sucesso!`);
-        broadcast('whatsapp-status', { businessId, connected: true, qrCode: null });
+        broadcast('whatsapp-status', { businessId, connected: true, qrCode: null }, businessId);
       }
 
       // Desconectado
@@ -177,7 +220,7 @@ export async function initWhatsApp(businessId: string): Promise<void> {
           logger.warn(`[WhatsApp:${businessId}] Deslogado. Limpando sessão...`);
           try { fs.rmSync(authDir, { recursive: true, force: true }); } catch { /* ignora */ }
           state.retryCount = 0;
-          broadcast('whatsapp-status', { businessId, connected: false, qrCode: null });
+          broadcast('whatsapp-status', { businessId, connected: false, qrCode: null }, businessId);
           setTimeout(() => initWhatsApp(businessId), 2000);
         } else {
           // Desconexão temporária — aguarda 8s antes de reportar ao frontend
@@ -193,7 +236,7 @@ export async function initWhatsApp(businessId: string): Promise<void> {
               if (!state.isReady) {
                 state.isReady = false;
                 state.qrCodeData = null;
-                broadcast('whatsapp-status', { businessId, connected: false, qrCode: null });
+                broadcast('whatsapp-status', { businessId, connected: false, qrCode: null }, businessId);
                 logger.warn(`[WhatsApp:${businessId}] Grace period esgotado — reportando desconexão.`);
               }
             }, 8_000);
@@ -204,14 +247,30 @@ export async function initWhatsApp(businessId: string): Promise<void> {
 
     // ── Mensagens recebidas ──
     socket.ev.on('messages.upsert', async ({ messages, type }) => {
-      if (type !== 'notify') return;
-
       for (const msg of messages) {
         try {
-          if (msg.key.fromMe) continue;
           if (!msg.message) continue;
           if (msg.key.remoteJid?.endsWith('@g.us')) continue;
           if (msg.key.remoteJid === 'status@broadcast') continue;
+
+          // Mensagem enviada pelo próprio número. Se não foi o bot, foi o dono
+          // digitando no celular: mantém a conversa em modo atendente humano.
+          if (msg.key.fromMe) {
+            const ownId = msg.key.id;
+            const ownJid = msg.key.remoteJid;
+            if (ownId && ownJid) {
+              setTimeout(async () => {
+                if (state.botSentIds.has(ownId)) return;
+                try {
+                  const phone = cleanPhone(await resolveContactJid(state, ownJid));
+                  if (phone) renewHandoff(businessId, phone);
+                } catch { /* ignora */ }
+              }, OWN_MESSAGE_CHECK_DELAY);
+            }
+            continue;
+          }
+
+          if (type !== 'notify') continue;
 
           const msgId = msg.key.id;
           if (!msgId || state.processedMessages.has(msgId)) continue;
@@ -229,39 +288,15 @@ export async function initWhatsApp(businessId: string): Promise<void> {
           if (!body) continue;
 
           const replyJid = msg.key.remoteJid!;
-          const normalizedJid = jidNormalizedUser(replyJid);
-
-          let resolvedJid = normalizedJid;
-          if (normalizedJid.endsWith('@lid')) {
-            // 1) Resolvedor nativo do Baileys (persistido no auth state, alimentado pelo
-            //    próprio protocolo Signal) — mais confiável que o cache local abaixo, que só
-            //    enche quando o evento de sincronização de contatos dispara (nem sempre acontece).
-            let fromSignal: string | null = null;
-            try {
-              fromSignal = (await state.socket?.signalRepository?.lidMapping?.getPNForLID(normalizedJid)) ?? null;
-            } catch (err: any) {
-              logger.warn(`[WhatsApp] Falha ao resolver LID via signalRepository: ${err.message}`);
-            }
-
-            const fromCache = state.lidCache.get(normalizedJid);
-            const fromContacts = (state.socket as any)?.contacts?.[normalizedJid]?.id;
-            resolvedJid = fromSignal ?? fromCache ?? fromContacts ?? normalizedJid;
-
-            if (resolvedJid !== normalizedJid) {
-              state.lidCache.set(normalizedJid, resolvedJid); // memoriza pra não bater no signalRepository de novo
-            }
-
-            logger.info(`[WhatsApp] LID detectado: ${normalizedJid} | signalRepository: ${fromSignal ?? 'miss'} | cache: ${fromCache ?? 'miss'} | contacts: ${fromContacts ?? 'miss'} | resolvido: ${resolvedJid}`);
-          }
-
-          const phone = jidNormalizedUser(resolvedJid);
+          const phone = await resolveContactJid(state, replyJid);
 
           const reply = await businessStorage.run(businessContext, () =>
             handleMessage(phone, body)
           );
 
           if (reply && state.socket) {
-            await state.socket.sendMessage(replyJid, { text: reply });
+            const sent = await state.socket.sendMessage(replyJid, { text: reply });
+            rememberBotMessage(state, sent?.key.id);
           }
         } catch (err: any) {
           logger.error(`[WhatsApp:${businessId}] Erro ao processar mensagem: ${err.message}`);
@@ -343,6 +378,7 @@ export const sendTextMessage = async (businessId: string, to: string, text: stri
   }
 
   const sent = await state.socket.sendMessage(result.jid, { text });
+  rememberBotMessage(state, sent?.key.id);
   return { id: sent?.key.id, to: result.jid, status: 'sent' };
 };
 

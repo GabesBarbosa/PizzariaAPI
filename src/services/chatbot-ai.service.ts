@@ -19,9 +19,15 @@ import {
   getPaymentMethods,
   getBusinessOrigin,
   getDeliveryZones,
+  getOpeningHours,
 } from '../repositories/settings.repository';
 import { getBusinessContext } from '../database/businessContext';
 import { createShopToken } from './shop-token.service';
+import { startHandoff } from './handoff.service';
+import { estaAberto, horarioEmTexto, proximaAbertura } from '../utils/opening-hours';
+
+const HANDOFF_TAG = '[ATENDENTE]';
+const HANDOFF_REPLY = 'Certo! Vou chamar um atendente, ele vai te responder por aqui em instantes.';
 import logger from '../utils/logger';
 
 const STATUS_LABELS: Record<string, string> = {
@@ -85,12 +91,13 @@ function buildShopUrl(slug: string, token?: string): string {
 /* ─── System prompt: cardápio + configurações reais do negócio ─── */
 
 async function buildSystemPrompt(shopUrl: string): Promise<string | null> {
-  const [business, products, paymentMethods, origin, zones] = await Promise.all([
+  const [business, products, paymentMethods, origin, zones, hours] = await Promise.all([
     getCurrentBusinessInfo(),
     productRepo.getAllProducts(),
     getPaymentMethods(),
     getBusinessOrigin(),
     getDeliveryZones(),
+    getOpeningHours(),
   ]);
   if (!business) return null;
 
@@ -104,6 +111,17 @@ async function buildSystemPrompt(shopUrl: string): Promise<string | null> {
     ? zones.map(z => `até ${z.maxKm}km: R$ ${z.fee.toFixed(2)}`).join(' | ')
     : 'consulte pelo cardápio';
 
+  // O prompt é montado a cada mensagem, então "Situação agora" está sempre atualizada.
+  let horarioInfo = '- Horário de funcionamento: não cadastrado';
+  if (hours) {
+    const aberto = estaAberto(hours);
+    const proxima = aberto ? null : proximaAbertura(hours);
+    horarioInfo =
+      `- Horário de funcionamento: ${horarioEmTexto(hours)}\n` +
+      `- Situação agora: ${aberto ? 'ABERTO' : 'FECHADO'}` +
+      (proxima ? ` (abre ${proxima})` : '');
+  }
+
   return [
     `Você é a atendente virtual da ${business.name}, respondendo clientes pelo WhatsApp.`,
     '',
@@ -113,6 +131,7 @@ async function buildSystemPrompt(shopUrl: string): Promise<string | null> {
     'INFORMAÇÕES:',
     `- Formas de pagamento aceitas: ${payments}`,
     `- Taxas de entrega: ${deliveryInfo}`,
+    horarioInfo,
     origin ? `- Estamos em ${origin.city}/${origin.uf}` : '',
     `- Link do cardápio online (é por lá que o cliente finaliza o pedido): ${shopUrl}`,
     '',
@@ -121,7 +140,10 @@ async function buildSystemPrompt(shopUrl: string): Promise<string | null> {
     '- Use SOMENTE os itens e preços listados acima. Nunca invente produto, sabor, adicional ou preço que não esteja no cardápio.',
     '- Você não finaliza pedidos pelo chat. Quando o cliente quiser pedir, envie o link do cardápio acima.',
     '- Se o cliente perguntar sobre o status de um pedido e nenhum "DADOS REAIS DO PEDIDO" aparecer nesta conversa, peça o número do pedido — nunca invente um status.',
-    '- Se não souber responder algo fora do escopo do restaurante, seja honesta e sugira aguardar um atendente humano.',
+    '- Se perguntarem o horário, responda com base em "Horário de funcionamento" acima.',
+    '- Se estiver FECHADO e o cliente quiser pedir, avise com simpatia e diga quando abre.',
+    '- Se o horário estiver "não cadastrado", diga que vai confirmar com a equipe — nunca invente.',
+    `- Se o cliente pedir para falar com uma pessoa, fizer uma reclamação ou pedir algo que você não consegue resolver com as informações acima, responda APENAS com: ${HANDOFF_TAG}`,
   ].filter(Boolean).join('\n');
 }
 
@@ -231,6 +253,14 @@ export async function handleAiMessage(phone: string, body: string): Promise<stri
       .map(b => b.text)
       .join('\n')
       .trim();
+
+    // A IA sinalizou que não consegue resolver: passa a conversa para um atendente.
+    if (reply.startsWith(HANDOFF_TAG)) {
+      startHandoff(ctx.businessId, phone, customer?.name);
+      session.history.push({ role: 'assistant', content: HANDOFF_REPLY });
+      session.history = session.history.slice(-MAX_HISTORY_MESSAGES);
+      return HANDOFF_REPLY;
+    }
 
     if (reply) {
       session.history.push({ role: 'assistant', content: reply });

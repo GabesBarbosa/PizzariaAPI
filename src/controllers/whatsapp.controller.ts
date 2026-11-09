@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import * as whatsappService from '../services/whatsapp.service';
+import * as handoffService from '../services/handoff.service';
 import { getAllCustomers } from '../repositories/customer.repository';
 import { getBusinessContext } from '../database/businessContext';
 
@@ -69,4 +70,18 @@ export const sendToAllCustomers = async (req: Request, res: Response, next: Next
     }
     next(err);
   }
+};
+
+/* ─── Atendimento humano (RF30 / RN10) ─── */
+
+export const listHandoffs = async (_req: Request, res: Response) => {
+  const { businessId } = getBusinessContext()!;
+  res.json({ handoffs: handoffService.listHandoffs(businessId) });
+};
+
+export const endHandoff = async (req: Request, res: Response) => {
+  const { businessId } = getBusinessContext()!;
+  const ended = handoffService.endHandoff(businessId, req.params.phone);
+  if (!ended) return res.status(404).json({ message: 'Nenhum atendimento ativo para esse telefone.' });
+  res.json({ message: 'Atendimento encerrado. O chatbot voltou a responder essa conversa.' });
 };

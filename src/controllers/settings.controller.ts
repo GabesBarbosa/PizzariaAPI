@@ -17,6 +17,8 @@ import {
   setDeliveryZones,
   getTableCount,
   setTableCount,
+  getOpeningHours,
+  setOpeningHours,
   type CrustOption,
   type SizeOption,
   type PaymentOption,
@@ -25,6 +27,7 @@ import {
   type DeliveryZone,
 } from '../repositories/settings.repository';
 import { geocodeAddress, lookupCep } from '../services/geocoding.service';
+import { validarOpeningHours, normalizarOpeningHours, estaAberto } from '../utils/opening-hours';
 
 export const getSettings = async (_req: Request, res: Response, next: NextFunction) => {
   try {
@@ -285,6 +288,33 @@ export const updateZones = async (req: Request, res: Response, next: NextFunctio
     const sorted = [...(zones as DeliveryZone[])].sort((a, b) => a.minKm - b.minKm);
     await setDeliveryZones(sorted);
     res.json({ zones: sorted });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/* ─── Horário de funcionamento (RF27) ─── */
+
+export const getOpeningHoursCtrl = async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const openingHours = await getOpeningHours();
+    res.json({ openingHours, openNow: openingHours ? estaAberto(openingHours) : null });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const updateOpeningHours = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const input = req.body?.openingHours;
+    const error = validarOpeningHours(input);
+    if (error) {
+      res.status(400).json({ message: error });
+      return;
+    }
+    const openingHours = normalizarOpeningHours(input);
+    await setOpeningHours(openingHours);
+    res.json({ openingHours, openNow: estaAberto(openingHours) });
   } catch (err) {
     next(err);
   }

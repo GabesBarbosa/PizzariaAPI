@@ -1,36 +1,16 @@
+# Sobe só a API para desenvolvimento local.
+# O banco é o MySQL do Railway: as credenciais (MYSQLHOST, MYSQLPASSWORD...) vêm do .env,
+# que não vai para o Git. Veja .env.example.
 services:
-  db:
-    image: mcr.microsoft.com/mssql/server:2022-latest
-    container_name: pizzaria-db
-    environment:
-      SA_PASSWORD: "Larissa7@"
-      ACCEPT_EULA: "Y"
-    ports:
-      - "1434:1433"
-    volumes:
-      - mssql-data:/var/opt/mssql
-    # Removed custom healthcheck because the image doesn't include sqlcmd by default.
-    # Rely on startup logs and allow the api service to attempt connections.
-
   api:
-    image: node:18
-    container_name: pizzaria-api
+    image: node:20
+    container_name: dashfood-api
     working_dir: /usr/src/app
     volumes:
       - ./:/usr/src/app
       - /usr/src/app/node_modules
     ports:
       - "3000:3000"
-    environment:
-      - DB_HOST=db
-      - DB_PORT=1433
-      - DB_USER=sa
-      - DB_PASSWORD=Larissa7@
-      - DB_NAME=Pizzaria
-      - PORT=3000
+    env_file:
+      - .env
     command: sh -c "npm install && npm run dev"
-    depends_on:
-      - db
-
-volumes:
-  mssql-data:

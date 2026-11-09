@@ -12,3 +12,11 @@ export const getAnalytics = async (period: string = 'week') => {
 export const getCustomerAnalytics = async (period: string = 'week') => {
   return customerDashboardRepo.getCustomerAnalytics(period);
 };
+
+export const getOrdersForExport = async (fromUtc: Date, toUtc: Date) => {
+  return dashboardRepo.getOrdersForExport(fromUtc, toUtc);
+};
+
+export const getExportSummary = async (fromUtc: Date, toUtc: Date) => {
+  return dashboardRepo.getExportSummary(fromUtc, toUtc);
+};

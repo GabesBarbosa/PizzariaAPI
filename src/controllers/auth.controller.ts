@@ -45,3 +45,23 @@ export const updateProfile = async (req: Request, res: Response, next: NextFunct
     next(err);
   }
 };
+
+export const forgotPassword = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    await authService.forgotPassword(req.body?.email);
+    // Mesma resposta exista ou não o e-mail.
+    res.json({ message: 'Se o e-mail estiver cadastrado, você receberá um link para redefinir a senha.' });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const resetPassword = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { token, newPassword } = req.body ?? {};
+    await authService.resetPassword(token, newPassword);
+    res.json({ message: 'Senha alterada com sucesso. Você já pode entrar com a nova senha.' });
+  } catch (err) {
+    next(err);
+  }
+};

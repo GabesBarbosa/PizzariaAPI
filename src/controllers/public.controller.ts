@@ -3,7 +3,8 @@ import * as productRepo from '../repositories/product.repository';
 import * as customerRepo from '../repositories/customer.repository';
 import { createOrder } from '../services/order.service';
 import { redeemShopToken } from '../services/shop-token.service';
-import { getPaymentMethods, getBusinessOrigin, getDeliveryZones } from '../repositories/settings.repository';
+import { getPaymentMethods, getBusinessOrigin, getDeliveryZones, getOpeningHours } from '../repositories/settings.repository';
+import { estaAberto, proximaAbertura } from '../utils/opening-hours';
 import { getBusinessContext } from '../database/businessContext';
 import { getPool } from '../database/mysqlClient';
 import { lookupCep } from '../services/geocoding.service';
@@ -15,11 +16,13 @@ import type { PublicRequest } from '../middlewares/publicBusiness.middleware';
 
 export const getBusiness = async (req: PublicRequest, res: Response, next: NextFunction) => {
   try {
-    const [paymentMethods, origin, zones] = await Promise.all([
+    const [paymentMethods, origin, zones, openingHours] = await Promise.all([
       getPaymentMethods(),
       getBusinessOrigin(),
       getDeliveryZones(),
+      getOpeningHours(),
     ]);
+    const openNow = openingHours ? estaAberto(openingHours) : null;
 
     res.json({
       id: req.business!.id,
@@ -29,6 +32,10 @@ export const getBusiness = async (req: PublicRequest, res: Response, next: NextF
       hasOrigin: !!origin,
       deliveryZones: zones,
       originCity: origin ? `${origin.city}/${origin.uf}` : null,
+      // null = horário não cadastrado (o cardápio não bloqueia pedidos nesse caso)
+      openingHours,
+      openNow,
+      nextOpening: openingHours && !openNow ? proximaAbertura(openingHours) : null,
     });
   } catch (err) {
     next(err);
@@ -260,8 +267,20 @@ export const postOrder = async (req: PublicRequest, res: Response, next: NextFun
   try {
     const { customerId, items, paymentMethod, changeFor, notes, deliveryFee, deliveryAddress, tableNumber } = req.body ?? {};
 
-    const isTableOrder = !!tableNumber;
+    const tableNum = Number(tableNumber);
+    const validTable = Number.isInteger(tableNum) && tableNum > 0 ? tableNum : undefined;
+    const isTableOrder = validTable !== undefined;
     if (!customerId && !isTableOrder) return res.status(400).json({ message: 'customerId é obrigatório.' });
+
+    // Com horário cadastrado, não aceita pedido com a loja fechada (o cardápio também bloqueia o botão).
+    const openingHours = await getOpeningHours();
+    if (openingHours && !estaAberto(openingHours)) {
+      const proxima = proximaAbertura(openingHours);
+      return res.status(409).json({
+        code: 'CLOSED',
+        message: 'Estabelecimento fechado' + (proxima ? ` — abrimos ${proxima}.` : '.'),
+      });
+    }
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: 'Itens obrigatórios.' });
     }
@@ -289,8 +308,8 @@ export const postOrder = async (req: PublicRequest, res: Response, next: NextFun
       deliveryAddress: deliveryAddress || undefined,
       deliveryFee: typeof deliveryFee === 'number' ? deliveryFee : 0,
       notes: orderNotes || undefined,
-      channel: tableNumber ? 'mesa' : 'web',
-      tableNumber: typeof tableNumber === 'number' ? tableNumber : undefined,
+      channel: isTableOrder ? 'mesa' : 'web',
+      tableNumber: validTable,
     });
 
     logger.info(`[Public] Pedido #${order!.id} criado via web (${req.business!.slug})`);
