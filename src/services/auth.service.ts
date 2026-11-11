@@ -142,7 +142,9 @@ const MIN_PASSWORD_LENGTH = 8;
 const sha256 = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
 
 function spaOrigin(): string {
-  return (process.env.SPA_ORIGIN || 'https://dashfood-rose.vercel.app').replace(/\/$/, '');
+  // Se houver vários endereços em SPA_ORIGIN, o primeiro é o usado nos links de e-mail.
+  const first = (process.env.SPA_ORIGIN || '').split(',')[0].trim();
+  return (first || 'https://dashfood-rose.vercel.app').replace(/\/$/, '');
 }
 
 /**

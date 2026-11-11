@@ -16,12 +16,23 @@ import { authMiddleware } from './middlewares/auth.middleware';
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
+// SPA_ORIGIN aceita um ou mais endereços separados por vírgula.
+// Para cada um, a versão com e sem "www." também é liberada.
+const spaOrigins = (process.env.SPA_ORIGIN || '')
+  .split(',')
+  .map(o => o.trim().replace(/\/$/, ''))
+  .filter(Boolean)
+  .flatMap(o => {
+    const m = o.match(/^(https?:\/\/)(www\.)?(.+)$/);
+    return m ? [`${m[1]}${m[3]}`, `${m[1]}www.${m[3]}`] : [o];
+  });
+
 const allowedOrigins = [
   'http://localhost:4200',
   'https://dashfood.vercel.app',
   'https://dashfood-rose.vercel.app',
-  process.env.SPA_ORIGIN
-].filter(Boolean) as string[];
+  ...spaOrigins
+];
 
 app.use(cors({ origin: allowedOrigins }));
 
